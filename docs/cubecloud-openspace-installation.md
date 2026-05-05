@@ -13,6 +13,19 @@ Keep the customization in your own fork's `main` branch, then let GitHub Actions
   - `ghcr.io/<owner>/<repo>-web`
 - Tags include the branch tag (`main` on your fork), a commit SHA tag, and `latest` on the default branch.
 
+For named Docker releases with versioned GHCR tags and GitHub release notes, use:
+
+- `.github/workflows/release-docker.yml`
+
+That workflow is manual on purpose. It lets you enter a release version such as `0.2.1`, optionally add release notes, publish semver-tagged Docker images, and create a GitHub release named `Open Design Docker <version>`.
+
+Docker release outputs use these conventions:
+
+- GitHub release tag: `open-design-docker-v<version>`
+- GHCR daemon image: `ghcr.io/<owner>/<repo>-daemon:<version>`
+- GHCR web image: `ghcr.io/<owner>/<repo>-web:<version>`
+- Optional rolling tag refresh: `latest`
+
 Recommended update lane:
 
 1. Keep your CubeCloud customizations on your fork's `main` branch.
@@ -47,6 +60,29 @@ docker login ghcr.io
 docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull
 docker compose --env-file .env.ghcr -f compose.ghcr.yaml up -d
 ```
+
+For a one-shot install on other machines without cloning the repository first, use the new installer scripts from a tagged Docker release.
+
+Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/<release-tag>/scripts/install-open-design-docker.sh | bash -s -- --owner <owner> --repository <repo> --repo-ref <release-tag> --image-tag <version>
+```
+
+Windows PowerShell:
+
+```powershell
+$script = Join-Path $env:TEMP 'install-open-design-docker.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/<owner>/<repo>/<release-tag>/scripts/install-open-design-docker.ps1' -OutFile $script; & $script -Owner '<owner>' -Repository '<repo>' -RepoRef '<release-tag>' -ImageTag '<version>'
+```
+
+The installer scripts:
+
+- download `compose.ghcr.yaml` from the selected ref
+- write a local `.env.ghcr`
+- pull the requested GHCR image tag
+- start the stack with `docker compose up -d`
+
+If GHCR is private on the target machine, run `docker login ghcr.io` first or pass credentials into the installer script.
 
 ## 1. Container Runtime
 

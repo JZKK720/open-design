@@ -1,0 +1,189 @@
+name: release-docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Docker release version (x.y.z)"
+        required: true
+        type: string
+      publish_latest:
+        description: "Also refresh the latest GHCR tags"
+        required: true
+        type: boolean
+        default: true
+      notes:
+        description: "Optional release notes shown above the install commands"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: open-design-release-docker-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Prepare Docker release metadata
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_RELEASE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    outputs:
+      image_owner_lower: ${{ steps.metadata.outputs.image_owner_lower }}
+      previous_release: ${{ steps.metadata.outputs.previous_release }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      repository_name: ${{ steps.metadata.outputs.repository_name }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Prepare Docker release metadata
+        id: metadata
+        run: node --experimental-strip-types ./scripts/release-docker.ts
+
+  publish:
+    name: Publish release ${{ matrix.service }} image
+    needs: metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: daemon
+            dockerfile: Dockerfile.daemon
+          - service: web
+            dockerfile: Dockerfile.web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute release image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ needs.metadata.outputs.image_owner_lower }}/${{ needs.metadata.outputs.repository_name }}-${{ matrix.service }}
+          tags: |
+            type=raw,value=${{ needs.metadata.outputs.version }}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ inputs.publish_latest }}
+
+      - name: Build and push release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=docker-release-${{ matrix.service }}
+          cache-to: type=gha,scope=docker-release-${{ matrix.service }},mode=max
+
+  release:
+    name: Create Docker release notes
+    needs: [metadata, publish]
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_IMAGE_OWNER: ${{ needs.metadata.outputs.image_owner_lower }}
+      DOCKER_IMAGE_REPOSITORY: ${{ needs.metadata.outputs.repository_name }}
+      DOCKER_PUBLISH_LATEST: ${{ inputs.publish_latest }}
+      DOCKER_RELEASE_NAME: ${{ needs.metadata.outputs.release_name }}
+      DOCKER_RELEASE_NOTES: ${{ inputs.notes }}
+      DOCKER_RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+      DOCKER_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Prepare Docker release notes
+        run: |
+          set -euo pipefail
+          notes_path="$RUNNER_TEMP/docker-release-notes.md"
+          raw_base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${DOCKER_RELEASE_TAG}"
+          cat > "$notes_path" <<EOF
+          ## Docker images
+
+          - \`ghcr.io/${DOCKER_IMAGE_OWNER}/${DOCKER_IMAGE_REPOSITORY}-daemon:${DOCKER_RELEASE_VERSION}\`
+          - \`ghcr.io/${DOCKER_IMAGE_OWNER}/${DOCKER_IMAGE_REPOSITORY}-web:${DOCKER_RELEASE_VERSION}\`
+          EOF
+
+          if [ "$DOCKER_PUBLISH_LATEST" = "true" ]; then
+            cat >> "$notes_path" <<EOF
+
+          - \`latest\` was refreshed for both images in this release.
+          EOF
+          fi
+
+          if [ -n "$DOCKER_RELEASE_NOTES" ]; then
+            tmp_path="$RUNNER_TEMP/docker-release-notes-with-summary.md"
+            printf '%s\n\n' "$DOCKER_RELEASE_NOTES" > "$tmp_path"
+            cat "$notes_path" >> "$tmp_path"
+            mv "$tmp_path" "$notes_path"
+          fi
+
+          cat >> "$notes_path" <<EOF
+
+          ## Install on Linux or macOS
+
+          \`\`\`bash
+          curl -fsSL ${raw_base}/scripts/install-open-design-docker.sh | bash -s -- --owner ${DOCKER_IMAGE_OWNER} --repository ${DOCKER_IMAGE_REPOSITORY} --repo-ref ${DOCKER_RELEASE_TAG} --image-tag ${DOCKER_RELEASE_VERSION}
+          \`\`\`
+
+          ## Install on Windows PowerShell
+
+          \`\`\`powershell
+          \$script = Join-Path \$env:TEMP 'install-open-design-docker.ps1'; Invoke-WebRequest '${raw_base}/scripts/install-open-design-docker.ps1' -OutFile \$script; & \$script -Owner '${DOCKER_IMAGE_OWNER}' -Repository '${DOCKER_IMAGE_REPOSITORY}' -RepoRef '${DOCKER_RELEASE_TAG}' -ImageTag '${DOCKER_RELEASE_VERSION}'
+          \`\`\`
+
+          ## Update an existing machine
+
+          \`\`\`bash
+          docker login ghcr.io
+          docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull
+          docker compose --env-file .env.ghcr -f compose.ghcr.yaml up -d
+          \`\`\`
+
+          If GHCR remains private for the target machine, run \`docker login ghcr.io\` before using the installer script.
+          EOF
+
+          echo "DOCKER_RELEASE_NOTES_PATH=$notes_path" >> "$GITHUB_ENV"
+
+      - name: Create Docker release
+        run: |
+          set -euo pipefail
+          gh release create "$DOCKER_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$DOCKER_RELEASE_NAME" \
+            --notes-file "$DOCKER_RELEASE_NOTES_PATH"
