@@ -22,6 +22,7 @@ import {
   DEFAULT_PET,
   hasAnyConfiguredProvider,
   loadConfig,
+  mergeDaemonConfig,
   saveConfig,
   syncConfigToDaemon,
   syncMediaProvidersToDaemon,
@@ -123,30 +124,7 @@ export function App() {
       setAppVersionInfo(versionInfo);
 
       setConfig((prev) => {
-        const next = { ...prev };
-
-        // Merge daemon-persisted config — daemon values win for the fields
-        // it tracks so that the choice survives origin/storage resets.
-        if (daemonConfig) {
-          if (daemonConfig.onboardingCompleted != null) {
-            next.onboardingCompleted = daemonConfig.onboardingCompleted;
-          }
-          if (daemonConfig.agentId !== undefined) {
-            next.agentId = daemonConfig.agentId;
-          }
-          if (daemonConfig.skillId !== undefined) {
-            next.skillId = daemonConfig.skillId;
-          }
-          if (daemonConfig.designSystemId !== undefined) {
-            next.designSystemId = daemonConfig.designSystemId;
-          }
-          if (daemonConfig.agentModels) {
-            next.agentModels = {
-              ...(next.agentModels ?? {}),
-              ...daemonConfig.agentModels,
-            };
-          }
-        }
+        const next = mergeDaemonConfig(prev, daemonConfig);
 
         if (alive) {
           if (!next.agentId) {

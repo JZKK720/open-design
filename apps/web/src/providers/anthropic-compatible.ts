@@ -1,5 +1,6 @@
 import { effectiveMaxTokens } from '../state/maxTokens';
 import type { AppConfig, ChatMessage } from '../types';
+import { allowLocalApiWithoutKey } from '../utils/apiBaseUrl';
 import type { StreamHandlers } from './anthropic';
 import { parseSseFrame } from './sse';
 
@@ -10,7 +11,8 @@ export async function streamMessageAnthropicProxy(
   signal: AbortSignal,
   handlers: StreamHandlers,
 ): Promise<void> {
-  if (!cfg.apiKey) {
+  const allowLocalNetwork = allowLocalApiWithoutKey(cfg);
+  if (!cfg.apiKey && !allowLocalNetwork) {
     handlers.onError(new Error('Missing API key — open Settings and paste one in.'));
     return;
   }
@@ -23,11 +25,12 @@ export async function streamMessageAnthropicProxy(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         baseUrl: cfg.baseUrl,
-        apiKey: cfg.apiKey,
+        ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
         model: cfg.model,
         systemPrompt: system,
         messages: history.map((m) => ({ role: m.role, content: m.content })),
         maxTokens: effectiveMaxTokens(cfg),
+        allowLocalNetwork,
       }),
       signal,
     });

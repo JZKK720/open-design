@@ -1,0 +1,36 @@
+FROM node:24-bookworm-slim
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends python3 make g++ \
+	&& rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+WORKDIR /workspace
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps ./apps
+COPY assets ./assets
+COPY craft ./craft
+COPY design-systems ./design-systems
+COPY e2e ./e2e
+COPY packages ./packages
+COPY prompt-templates ./prompt-templates
+COPY scripts ./scripts
+COPY skills ./skills
+COPY tools ./tools
+COPY vercel.json ./
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @open-design/daemon build
+
+ENV OD_BIND_HOST=0.0.0.0
+ENV OD_DATA_DIR=/data
+ENV OD_PORT=7456
+
+EXPOSE 7456
+
+CMD ["node", "apps/daemon/dist/cli.js", "--no-open", "--host", "0.0.0.0", "--port", "7456"]

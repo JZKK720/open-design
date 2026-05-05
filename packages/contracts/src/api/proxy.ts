@@ -7,13 +7,16 @@ export interface ProxyMessage {
 
 export interface ProxyStreamRequest {
   baseUrl: string;
-  apiKey: string;
+  apiKey?: string;
   model: string;
   systemPrompt?: string;
   messages: ProxyMessage[];
   // Caps the upstream completion length. Defaults to 8192 when unset so
   // pre-existing clients keep their old behavior.
   maxTokens?: number;
+  // Explicit opt-in for localhost / private-network model gateways.
+  // Remote endpoints stay on the stricter default path.
+  allowLocalNetwork?: boolean;
 }
 
 export interface ProxyStreamStartPayload {

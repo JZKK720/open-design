@@ -7,8 +7,29 @@
  */
 import { effectiveMaxTokens } from '../state/maxTokens';
 import type { AppConfig, ChatMessage } from '../types';
+import { allowLocalApiWithoutKey } from '../utils/apiBaseUrl';
 import type { StreamHandlers } from './anthropic';
 import { parseSseFrame } from './sse';
+
+function extractOpenAITextDelta(data: Record<string, unknown>): string {
+  const choices = Array.isArray(data.choices) ? data.choices : [];
+  const firstChoice = choices[0];
+  if (!firstChoice || typeof firstChoice !== 'object') return '';
+  const delta = 'delta' in firstChoice && firstChoice.delta && typeof firstChoice.delta === 'object'
+    ? firstChoice.delta
+    : null;
+  const content = delta && 'content' in delta ? delta.content : undefined;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== 'object') return '';
+        return part.type === 'text' && typeof part.text === 'string' ? part.text : '';
+      })
+      .join('');
+  }
+  return '';
+}
 
 export async function streamMessageOpenAI(
   cfg: AppConfig,
@@ -17,7 +38,8 @@ export async function streamMessageOpenAI(
   signal: AbortSignal,
   handlers: StreamHandlers,
 ): Promise<void> {
-  if (!cfg.apiKey) {
+  const allowLocalNetwork = allowLocalApiWithoutKey(cfg);
+  if (!cfg.apiKey && !allowLocalNetwork) {
     handlers.onError(new Error('Missing API key — open Settings and paste one in.'));
     return;
   }
@@ -25,16 +47,17 @@ export async function streamMessageOpenAI(
   let acc = '';
 
   try {
-    const resp = await fetch('/api/proxy/stream', {
+    const resp = await fetch('/api/proxy/openai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         baseUrl: cfg.baseUrl,
-        apiKey: cfg.apiKey,
+        ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
         model: cfg.model,
         systemPrompt: system,
         messages: history.map((m) => ({ role: m.role, content: m.content })),
         maxTokens: effectiveMaxTokens(cfg),
+        allowLocalNetwork,
       }),
       signal,
     });
@@ -62,8 +85,10 @@ export async function streamMessageOpenAI(
         const parsed = parseSseFrame(frame);
         if (!parsed || parsed.kind !== 'event') continue;
 
-        if (parsed.event === 'delta') {
-          const text = String(parsed.data.text ?? '');
+        if (parsed.event === 'delta' || parsed.event === 'message') {
+          const text = parsed.event === 'delta'
+            ? String(parsed.data.text ?? '')
+            : extractOpenAITextDelta(parsed.data);
           if (text) {
             acc += text;
             handlers.onDelta(text);

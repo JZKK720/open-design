@@ -29,6 +29,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   mode: 'daemon',
   apiKey: '',
   baseUrl: 'https://api.anthropic.com',
+  allowLocalApiBaseUrl: false,
   model: 'claude-sonnet-4-5',
   // New configs should be explicit. loadConfig() still detects parsed legacy
   // saved configs that did not have this field and migrates those from their
@@ -216,6 +217,54 @@ export function loadConfig(): AppConfig {
   }
 }
 
+export function mergeDaemonConfig(
+  config: AppConfig,
+  daemonConfig: AppConfigPrefs | null,
+): AppConfig {
+  if (!daemonConfig) return config;
+
+  const next: AppConfig = { ...config };
+
+  if (daemonConfig.onboardingCompleted != null) {
+    next.onboardingCompleted = daemonConfig.onboardingCompleted;
+  }
+  if (daemonConfig.agentId !== undefined) {
+    next.agentId = daemonConfig.agentId;
+  }
+  if (daemonConfig.skillId !== undefined) {
+    next.skillId = daemonConfig.skillId;
+  }
+  if (daemonConfig.designSystemId !== undefined) {
+    next.designSystemId = daemonConfig.designSystemId;
+  }
+  if (daemonConfig.agentModels) {
+    next.agentModels = {
+      ...(next.agentModels ?? {}),
+      ...daemonConfig.agentModels,
+    };
+  }
+  if (daemonConfig.mode !== undefined) {
+    next.mode = daemonConfig.mode;
+  }
+  if (daemonConfig.baseUrl !== undefined) {
+    next.baseUrl = daemonConfig.baseUrl;
+  }
+  if (daemonConfig.allowLocalApiBaseUrl !== undefined) {
+    next.allowLocalApiBaseUrl = daemonConfig.allowLocalApiBaseUrl;
+  }
+  if (daemonConfig.model !== undefined) {
+    next.model = daemonConfig.model;
+  }
+  if (daemonConfig.apiProtocol !== undefined) {
+    next.apiProtocol = daemonConfig.apiProtocol;
+  }
+  if (daemonConfig.apiProviderBaseUrl !== undefined) {
+    next.apiProviderBaseUrl = daemonConfig.apiProviderBaseUrl;
+  }
+
+  return next;
+}
+
 export function saveConfig(config: AppConfig): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }
@@ -263,6 +312,12 @@ export async function syncConfigToDaemon(config: AppConfig): Promise<void> {
     agentModels: config.agentModels,
     skillId: config.skillId,
     designSystemId: config.designSystemId,
+    mode: config.mode,
+    baseUrl: config.baseUrl,
+    allowLocalApiBaseUrl: config.allowLocalApiBaseUrl,
+    model: config.model,
+    apiProtocol: config.apiProtocol,
+    apiProviderBaseUrl: config.apiProviderBaseUrl ?? null,
   };
   try {
     await fetch('/api/app-config', {

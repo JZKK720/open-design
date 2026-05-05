@@ -1,0 +1,12 @@
+{
+  "folders": [
+    {
+      "name": "open-design",
+      "path": "."
+    },
+    {
+      "name": "OpenSpace",
+      "path": "../OpenSpace"
+    }
+  ]
+}

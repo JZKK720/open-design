@@ -131,6 +131,7 @@ export interface AppConfig {
   mode: ExecMode;
   apiKey: string;
   baseUrl: string;
+  allowLocalApiBaseUrl?: boolean;
   model: string;
   apiProtocol?: ApiProtocol;
   /** Internal config schema/migration version for localStorage upgrades. */

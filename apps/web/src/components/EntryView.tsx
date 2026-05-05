@@ -251,7 +251,6 @@ export function EntryView({
               <span className="entry-brand-title">{t('app.brand')}</span>
               <span className="entry-brand-pill">{t('app.brandPill')}</span>
             </div>
-            <div className="entry-brand-subtitle">{t('app.brandSubtitle')}</div>
           </div>
         </div>
         <NewProjectPanel

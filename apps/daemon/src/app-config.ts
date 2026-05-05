@@ -16,12 +16,22 @@ export interface AgentModelPrefs {
   reasoning?: string;
 }
 
+export type AppMode = 'daemon' | 'api';
+
+export type ApiProtocol = 'anthropic' | 'openai';
+
 export interface AppConfigPrefs {
   onboardingCompleted?: boolean;
   agentId?: string | null;
   agentModels?: Record<string, AgentModelPrefs>;
   skillId?: string | null;
   designSystemId?: string | null;
+  mode?: AppMode;
+  baseUrl?: string;
+  allowLocalApiBaseUrl?: boolean;
+  model?: string;
+  apiProtocol?: ApiProtocol;
+  apiProviderBaseUrl?: string | null;
 }
 
 const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
@@ -30,6 +40,12 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'agentModels',
   'skillId',
   'designSystemId',
+  'mode',
+  'baseUrl',
+  'allowLocalApiBaseUrl',
+  'model',
+  'apiProtocol',
+  'apiProviderBaseUrl',
 ] as const);
 
 function configFile(dataDir: string): string {
@@ -73,6 +89,26 @@ function applyConfigValue(
     return;
   }
   if (key === 'agentId' || key === 'skillId' || key === 'designSystemId') {
+    if (typeof value === 'string' || value === null) target[key] = value;
+    return;
+  }
+  if (key === 'mode') {
+    if (value === 'daemon' || value === 'api') target[key] = value;
+    return;
+  }
+  if (key === 'baseUrl' || key === 'model') {
+    if (typeof value === 'string') target[key] = value;
+    return;
+  }
+  if (key === 'allowLocalApiBaseUrl') {
+    if (typeof value === 'boolean') target[key] = value;
+    return;
+  }
+  if (key === 'apiProtocol') {
+    if (value === 'anthropic' || value === 'openai') target[key] = value;
+    return;
+  }
+  if (key === 'apiProviderBaseUrl') {
     if (typeof value === 'string' || value === null) target[key] = value;
     return;
   }

@@ -16,6 +16,7 @@ import {
   modelMaxTokensDefault,
 } from '../state/maxTokens';
 import type { AgentInfo, AppConfig, AppTheme, AppVersionInfo, ExecMode } from '../types';
+import { allowLocalApiWithoutKey, isLocalApiBaseUrl } from '../utils/apiBaseUrl';
 import { MEDIA_PROVIDERS } from '../media/models';
 import type { MediaProvider } from '../media/models';
 import { PetSettings } from './pet/PetSettings';
@@ -185,7 +186,11 @@ export function SettingsDialog({
   const canSave =
     cfg.mode === 'daemon'
       ? Boolean(cfg.agentId && agents.find((a) => a.id === cfg.agentId)?.available)
-      : Boolean(cfg.apiKey.trim() && cfg.model.trim() && cfg.baseUrl.trim());
+      : Boolean(
+          cfg.model.trim() &&
+          cfg.baseUrl.trim() &&
+          (cfg.apiKey.trim() || allowLocalApiWithoutKey(cfg))
+        );
 
   const apiProtocol = cfg.apiProtocol ?? 'anthropic';
   const protocolProviders = useMemo(
@@ -594,6 +599,10 @@ export function SettingsDialog({
                     {showApiKey ? t('settings.hide') : t('settings.show')}
                   </button>
                 </div>
+                <p className="hint">
+                  Required for remote APIs. For a trusted localhost or private-network gateway,
+                  you can leave this blank after enabling the local endpoint option below.
+                </p>
               </label>
               <label className="field">
                 <span className="field-label">{t('settings.model')}</span>
@@ -634,6 +643,24 @@ export function SettingsDialog({
                   value={cfg.baseUrl}
                   onChange={(e) => setCfg({ ...cfg, baseUrl: e.target.value, apiProviderBaseUrl: null })}
                 />
+              </label>
+              <label className="field">
+                <span className="field-label">Local/private endpoint</span>
+                <div className="field-row">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(cfg.allowLocalApiBaseUrl)}
+                    onChange={(e) => setCfg((c) => ({ ...c, allowLocalApiBaseUrl: e.target.checked }))}
+                  />
+                  <span>
+                    Allow localhost or private-network model gateways such as Ollama, LM Studio, or vLLM.
+                  </span>
+                </div>
+                <p className="hint">
+                  {isLocalApiBaseUrl(cfg.baseUrl)
+                    ? 'The current base URL points at a local/private address. This option must stay enabled to use it.'
+                    : 'Leave this off for hosted providers. It only relaxes the private-network block for the current API base URL.'}
+                </p>
               </label>
               <p className="hint">{t('settings.apiHint')}</p>
             </section>

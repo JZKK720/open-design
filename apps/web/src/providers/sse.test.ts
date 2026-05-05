@@ -471,24 +471,25 @@ describe('streamViaDaemon', () => {
 describe('streamMessageOpenAI', () => {
   it('ignores comments and keeps delta/end behavior unchanged', async () => {
     const handlers = createStreamHandlers();
+    const fetchMock = vi.fn(async () =>
+      sseResponse(
+        [
+          ': keepalive',
+          '',
+          'event: delta',
+          'data: {"text":"hi"}',
+          '',
+          ': keepalive',
+          '',
+          'event: end',
+          'data: {}',
+          '',
+        ].join('\n'),
+      ),
+    );
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        sseResponse(
-          [
-            ': keepalive',
-            '',
-            'event: delta',
-            'data: {"text":"hi"}',
-            '',
-            ': keepalive',
-            '',
-            'event: end',
-            'data: {}',
-            '',
-          ].join('\n'),
-        ),
-      ),
+      fetchMock,
     );
 
     await streamMessageOpenAI(
@@ -511,6 +512,55 @@ describe('streamMessageOpenAI', () => {
     expect(handlers.onDelta).toHaveBeenCalledWith('hi');
     expect(handlers.onError).not.toHaveBeenCalled();
     expect(handlers.onDone).toHaveBeenCalledWith('hi');
+    expect(fetchMock).toHaveBeenCalledWith('/api/proxy/openai/stream', expect.objectContaining({
+      method: 'POST',
+    }));
+  });
+
+  it('allows a trusted local gateway without an API key', async () => {
+    const handlers = createStreamHandlers();
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse(
+        [
+          'event: message',
+          'data: {"choices":[{"delta":{"content":"hello local"}}]}',
+          '',
+          'event: end',
+          'data: {}',
+          '',
+        ].join('\n'),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await streamMessageOpenAI(
+      {
+        mode: 'api',
+        apiKey: '',
+        baseUrl: 'http://host.docker.internal:11434',
+        allowLocalApiBaseUrl: true,
+        model: 'llama3.1',
+        agentId: null,
+        skillId: null,
+        designSystemId: null,
+      },
+      '',
+      [{ id: '1', role: 'user', content: 'hello' }],
+      new AbortController().signal,
+      handlers,
+    );
+
+    expect(handlers.onError).not.toHaveBeenCalled();
+    expect(handlers.onDone).toHaveBeenCalledWith('hello local');
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(init).toBeDefined();
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      allowLocalNetwork: true,
+      baseUrl: 'http://host.docker.internal:11434',
+      model: 'llama3.1',
+    });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty('apiKey');
   });
 });
 

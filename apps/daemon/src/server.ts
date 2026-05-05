@@ -181,6 +181,67 @@ function cleanString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+const LOCAL_API_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  'host.docker.internal',
+]);
+
+function readEnvString(name) {
+  const value = cleanString(process.env[name]);
+  return value || undefined;
+}
+
+function readEnvBoolean(name) {
+  const value = cleanString(process.env[name]).toLowerCase();
+  if (!value) return undefined;
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  return undefined;
+}
+
+function readAppConfigDefaultsFromEnv() {
+  const defaults = {};
+
+  const mode = readEnvString('OD_DEFAULT_MODE');
+  if (mode === 'daemon' || mode === 'api') {
+    defaults.mode = mode;
+  }
+
+  const baseUrl = readEnvString('OD_DEFAULT_API_BASE_URL');
+  if (baseUrl) {
+    defaults.baseUrl = baseUrl;
+    defaults.apiProviderBaseUrl = null;
+  }
+
+  const model = readEnvString('OD_DEFAULT_API_MODEL');
+  if (model) {
+    defaults.model = model;
+  }
+
+  const apiProtocol = readEnvString('OD_DEFAULT_API_PROTOCOL');
+  if (apiProtocol === 'anthropic' || apiProtocol === 'openai') {
+    defaults.apiProtocol = apiProtocol;
+  }
+
+  const allowLocalApiBaseUrl = readEnvBoolean(
+    'OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL',
+  );
+  if (allowLocalApiBaseUrl !== undefined) {
+    defaults.allowLocalApiBaseUrl = allowLocalApiBaseUrl;
+  }
+
+  const apiProviderBaseUrl = readEnvString('OD_DEFAULT_API_PROVIDER_BASE_URL');
+  if (apiProviderBaseUrl) {
+    defaults.apiProviderBaseUrl = apiProviderBaseUrl;
+  }
+
+  return defaults;
+}
+
+const APP_CONFIG_ENV_DEFAULTS = readAppConfigDefaultsFromEnv();
+
 function compactString(value, max) {
   const text = cleanString(value).replace(/\s+/g, ' ');
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -1859,7 +1920,10 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     try {
-      const config = await readAppConfig(RUNTIME_DATA_DIR);
+      const config = {
+        ...APP_CONFIG_ENV_DEFAULTS,
+        ...(await readAppConfig(RUNTIME_DATA_DIR)),
+      };
       res.json({ config });
     } catch (err) {
       res
@@ -2543,7 +2607,7 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
   const redactAuthTokens = (text) =>
     text.replace(/Bearer [A-Za-z0-9_\-.+/=]+/g, 'Bearer [REDACTED]');
 
-  const validateExternalApiBaseUrl = (baseUrl) => {
+  const validateExternalApiBaseUrl = (baseUrl, allowLocalNetwork = false) => {
     let parsed;
     try {
       parsed = new URL(baseUrl.replace(/\/+$/, ''));
@@ -2553,39 +2617,48 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       return { error: 'Only http/https allowed' };
     }
-    if (
-      ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname) ||
+    const isLocalNetwork = (
+      LOCAL_API_HOSTS.has(parsed.hostname) ||
       parsed.hostname.startsWith('169.254.') ||
       parsed.hostname.startsWith('10.') ||
       /^192\.168\./.test(parsed.hostname) ||
       /^172\.(1[6-9]|2\d|3[01])\./.test(parsed.hostname)
-    ) {
+    );
+    if (isLocalNetwork && !allowLocalNetwork) {
       return { error: 'Internal IPs blocked', forbidden: true };
     }
-    return { parsed };
+    return { parsed, isLocalNetwork };
   };
 
   app.post('/api/proxy/anthropic/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, allowLocalNetwork } =
       proxyBody;
-    if (!baseUrl || !apiKey || !model) {
+    if (!baseUrl || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        'baseUrl, apiKey, and model are required',
+        'baseUrl and model are required',
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl);
+    const validated = validateExternalApiBaseUrl(baseUrl, allowLocalNetwork === true);
     if (validated.error) {
       return sendApiError(
         res,
         validated.forbidden ? 403 : 400,
         validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
         validated.error,
+      );
+    }
+    if (!apiKey && !validated.isLocalNetwork) {
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'apiKey is required for non-local endpoints',
       );
     }
 
@@ -2614,8 +2687,8 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
+          ...(apiKey ? { 'x-api-key': apiKey } : {}),
         },
         body: JSON.stringify(payload),
       });
@@ -2669,24 +2742,32 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
   app.post('/api/proxy/openai/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, allowLocalNetwork } =
       proxyBody;
-    if (!baseUrl || !apiKey || !model) {
+    if (!baseUrl || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        'baseUrl, apiKey, and model are required',
+        'baseUrl and model are required',
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl);
+    const validated = validateExternalApiBaseUrl(baseUrl, allowLocalNetwork === true);
     if (validated.error) {
       return sendApiError(
         res,
         validated.forbidden ? 403 : 400,
         validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
         validated.error,
+      );
+    }
+    if (!apiKey && !validated.isLocalNetwork) {
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'apiKey is required for non-local endpoints',
       );
     }
 
@@ -2717,7 +2798,7 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify(payload),
       });
@@ -2748,16 +2829,36 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const dataStr = line.slice(6).trim();
-            if (dataStr === '[DONE]') break;
+            if (dataStr === '[DONE]') {
+              sse.send('end', {});
+              break;
+            }
             try {
               const data = JSON.parse(dataStr);
-              sse.send('message', data);
+              const text = Array.isArray(data?.choices)
+                ? data.choices
+                    .map((choice) => {
+                      const delta = choice && typeof choice === 'object' ? choice.delta : null;
+                      if (typeof delta?.content === 'string') return delta.content;
+                      if (Array.isArray(delta?.content)) {
+                        return delta.content
+                          .map((part) => part?.type === 'text' && typeof part.text === 'string' ? part.text : '')
+                          .join('');
+                      }
+                      return '';
+                    })
+                    .join('')
+                : '';
+              if (text) {
+                sse.send('delta', { text });
+              }
             } catch (e) {
               // ignore parse errors for partial chunks
             }
           }
         }
       }
+      sse.send('end', {});
       sse.end();
     } catch (err) {
       console.error(`[proxy:openai] internal error: ${err.message}`);

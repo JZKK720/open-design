@@ -1,0 +1,35 @@
+FROM node:24-bookworm-slim AS build
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends python3 make g++ \
+	&& rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+WORKDIR /workspace
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps ./apps
+COPY assets ./assets
+COPY craft ./craft
+COPY design-systems ./design-systems
+COPY e2e ./e2e
+COPY packages ./packages
+COPY prompt-templates ./prompt-templates
+COPY scripts ./scripts
+COPY skills ./skills
+COPY tools ./tools
+COPY vercel.json ./
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @open-design/web build
+
+FROM nginx:1.29-alpine
+
+COPY docker/nginx/open-design.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /workspace/apps/web/out /usr/share/nginx/html
+
+EXPOSE 80
