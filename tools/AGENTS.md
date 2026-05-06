@@ -23,6 +23,26 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 - Do not hand-build `--od-stamp-*` args, process-scan regexes, runtime tokens, process roles, or duplicate namespace/source args in `tools/dev`, future `tools/pack`, or packaged launchers.
 - Port flags are authoritative inputs: `--daemon-port` and `--web-port`. Internal env vars are `OD_PORT` and `OD_WEB_PORT`; do not introduce `NEXT_PORT`.
 
+## Build-agent checklist
+
+When reviewing or adapting tooling builds, require all of the following:
+
+1. `tools-dev` and `tools-pack` changes use package primitives (`sidecar-proto`, `sidecar`, `platform`) instead of copied process/stamp logic.
+2. Validation runs package-scoped first:
+	- `pnpm --filter @open-design/tools-dev typecheck`
+	- `pnpm --filter @open-design/tools-dev build`
+	- `pnpm --filter @open-design/tools-pack typecheck`
+	- `pnpm --filter @open-design/tools-pack build`
+3. Lifecycle verification still goes through `pnpm tools-dev ...` and never through removed legacy root aliases.
+4. Namespace/path behavior is validated independently from transport ports.
+
+## Current adaptation focus
+
+- Primary tooling adaptation surface: `tools/dev` and `tools/pack`.
+- In-scope tooling adaptations: build pipeline/CI updates, release artifact preparation, and namespace-aware lifecycle/install behavior for adapted app shells.
+- Preserve current command coverage and runtime behavior while extending tooling for adaptation work.
+- Prefer extending existing `tools-dev` and `tools-pack` surfaces over introducing parallel lifecycle commands.
+
 ## Common tools commands
 
 ```bash

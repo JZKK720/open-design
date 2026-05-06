@@ -21,10 +21,3 @@ export function isLocalApiBaseUrl(baseUrl: string): boolean {
     return false;
   }
 }
-
-export function allowLocalApiWithoutKey(config: {
-  allowLocalApiBaseUrl?: boolean;
-  baseUrl: string;
-}): boolean {
-  return Boolean(config.allowLocalApiBaseUrl && isLocalApiBaseUrl(config.baseUrl));
-}

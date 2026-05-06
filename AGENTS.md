@@ -6,6 +6,7 @@ This file is the single source of truth for agents entering this repository. Rea
 
 - Product and onboarding: `README.md`, `README.zh-CN.md`, `QUICKSTART.md`.
 - Contribution and environment: `CONTRIBUTING.md`, `CONTRIBUTING.zh-CN.md`.
+- Containerized fork distribution: `docs/cubecloud-openspace-installation.md`.
 - Architecture and protocols: `docs/spec.md`, `docs/architecture.md`, `docs/skills-protocol.md`, `docs/agent-adapters.md`, `docs/modes.md`.
 - Roadmap and references: `docs/roadmap.md`, `docs/references.md`, `specs/current/maintainability-roadmap.md`.
 - Directory-level agent guidance: `apps/AGENTS.md`, `packages/AGENTS.md`, `tools/AGENTS.md`.
@@ -69,6 +70,51 @@ This file is the single source of truth for agents entering this repository. Rea
 - On a GUI-capable machine, validate desktop by running `pnpm tools-dev`, then `pnpm tools-dev inspect desktop status`.
 - Stamp/namespace changes must validate two concurrent namespaces and run desktop `inspect eval` plus `inspect screenshot` for each namespace.
 - Path/log changes must run `pnpm tools-dev logs --namespace <name> --json` and confirm log paths are under `.tmp/tools-dev/<namespace>/...`.
+
+## Build-agent adaptation workflow
+
+Use this sequence when adapting Open Design build flows for another app or product shell:
+
+1. Classify the change first:
+	- App runtime change (`apps/web`, `apps/daemon`, `apps/desktop`, `apps/packaged`)
+	- Package boundary change (`packages/contracts`, `packages/sidecar-proto`, `packages/sidecar`, `packages/platform`)
+	- Tooling/orchestration change (`tools/dev`, `tools/pack`)
+	- Container distribution lane (`compose.yaml`, `compose.ghcr.yaml`, `.github/workflows/publish-ghcr.yml`, `.github/workflows/release-docker.yml`)
+2. For container and GHCR work, fix the active lane before editing:
+	- Default fork GHCR lane: `compose.yaml`
+	- Env-file GHCR lane: `compose.ghcr.yaml` plus `.env.ghcr`
+	- Explicit local source rebuild lane: `compose.yaml` with `docker compose up --build` or `docker compose build`
+	- GHCR publish lane: publish/release workflows plus install/update scripts
+	- Prefer the upstream GHCR consume lane only when the required runtime behavior already exists upstream or the fork-only changes do not affect image contents.
+	- If CubeCloud customizations on `fork/main` affect the runtime images, treat the fork GHCR publish lane as the deployment source of truth.
+	- The default `compose.yaml` runtime should follow the fork GHCR `latest` tag unless the operator explicitly asks to rebuild from local source.
+	- A successful local source build does not prove the pulled GHCR images contain the same changes.
+	- Workflow presence proves the repo is configured to publish images, not that a fork package already exists or is the deployed source of truth.
+3. Run the narrowest validating command first (package-scoped `pnpm --filter ... typecheck|test|build`), then run workspace gates (`pnpm typecheck`, `pnpm test`, and `pnpm build` when build surfaces changed).
+	- Important: root `pnpm build` currently maps to `pnpm --filter @open-design/web build`; package-level build checks are still required for daemon/desktop/tools changes.
+4. For lifecycle changes, validate through `pnpm tools-dev` commands only; do not use removed root aliases.
+5. For stamp/namespace/path logic, require evidence that:
+	- stamp fields remain exactly `app`, `mode`, `namespace`, `ipc`, `source`
+	- path derivation is namespace-scoped and does not include daemon/web port values
+	- orchestration code consumes package primitives instead of hand-rolled arg/regex logic
+6. For packaged flows, validate `tools-pack` lanes independently from local `tools-dev` flows; release artifact naming stays canonical while local install paths may be namespace-scoped for multi-instance checks.
+7. If the fork is the GHCR publishing lane, keep `fork/main` authoritative for CubeCloud-specific changes and choose the upstream sync method intentionally:
+	- cherry-pick when you want selected upstream fixes without taking unrelated runtime or release changes
+	- merge or rebase when you want a broader upstream refresh and are prepared to validate the full combined surface before republishing
+
+If a build-agent proposal skips classification, narrow validation, or namespace/path invariants, treat it as incomplete.
+
+## Current adaptation target
+
+This repository is currently being adapted for another app/product shell. For build-agent work, assume this scoped target unless the user changes it:
+
+- Adaptation categories in scope: branding/white-label shell, runtime/process model, build pipeline/CI, and multi-tenant/namespace behavior.
+- Primary edit surfaces: `apps/web`, `apps/desktop`, `tools/dev`, and `tools/pack`.
+- For containerized distribution decisions, use `docs/cubecloud-openspace-installation.md` as the reference for fork-published GHCR images, install scripts, and update lanes.
+- Keep CubeCloud customizations on `fork/main`; only point deployments at upstream GHCR when that does not drop required fork-only runtime behavior.
+- Preserve full existing product behavior. Do not remove, narrow, or silently change existing functions as a shortcut for adaptation work.
+- Allowed agent actions: review build changes, generate adaptation patches, run validation commands, and prepare release artifacts.
+- If a change requires stepping into `apps/daemon`, `apps/packaged`, or `packages/*`, explain the dependency hop before editing and keep the change minimal.
 
 # Common commands
 

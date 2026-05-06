@@ -83,6 +83,24 @@ describe('app-config', () => {
       const cfg = await readAppConfig(dataDir);
       expect(cfg).toEqual({});
     });
+
+    it('drops legacy API bootstrap keys from stored config files', async () => {
+      await writeFile(
+        path.join(dataDir, 'app-config.json'),
+        JSON.stringify({
+          onboardingCompleted: true,
+          mode: 'api',
+          baseUrl: 'http://host.docker.internal:11434',
+          allowLocalApiBaseUrl: true,
+          model: 'qwen3.6:35B-3ab-q8_0',
+          apiProtocol: 'openai',
+          apiProviderBaseUrl: null,
+        }),
+      );
+
+      const cfg = await readAppConfig(dataDir);
+      expect(cfg).toEqual({ onboardingCompleted: true });
+    });
   });
 
   describe('writeAppConfig', () => {

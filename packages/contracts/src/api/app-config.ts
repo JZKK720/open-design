@@ -13,9 +13,11 @@ export interface AppConfigPrefs {
   agentModels?: Record<string, AgentModelPrefs>;
   skillId?: string | null;
   designSystemId?: string | null;
+}
+
+export interface AppConfigBootstrap {
   mode?: AppMode;
   baseUrl?: string;
-  allowLocalApiBaseUrl?: boolean;
   model?: string;
   apiProtocol?: ApiProtocol;
   apiProviderBaseUrl?: string | null;
@@ -23,6 +25,7 @@ export interface AppConfigPrefs {
 
 export interface AppConfigResponse {
   config: AppConfigPrefs;
+  bootstrap?: AppConfigBootstrap;
 }
 
 export type UpdateAppConfigRequest = Partial<AppConfigPrefs>;

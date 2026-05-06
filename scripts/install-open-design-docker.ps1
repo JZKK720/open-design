@@ -1,16 +1,14 @@
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$Owner,
+  [string]$Owner = "jzkk720",
   [string]$Repository = "open-design",
   [string]$RepoRef = "main",
-  [string]$ImageTag = "main",
+  [string]$ImageTag = "latest",
   [string]$InstallDir = (Join-Path (Get-Location) "open-design-docker"),
   [string]$Mode = "",
   [string]$ApiProtocol = "",
   [string]$ApiBaseUrl = "",
   [string]$ApiModel = "",
-  [string]$AllowLocalApiBaseUrl = "",
   [string]$GhcrUsername = "",
   [string]$GhcrToken = "",
   [switch]$SkipStart
@@ -46,8 +44,7 @@ $envLines = @(
   "OD_DEFAULT_MODE=$Mode",
   "OD_DEFAULT_API_PROTOCOL=$ApiProtocol",
   "OD_DEFAULT_API_BASE_URL=$ApiBaseUrl",
-  "OD_DEFAULT_API_MODEL=$ApiModel",
-  "OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL=$AllowLocalApiBaseUrl"
+  "OD_DEFAULT_API_MODEL=$ApiModel"
 )
 Set-Content -Path $envPath -Value ($envLines -join [Environment]::NewLine)
 

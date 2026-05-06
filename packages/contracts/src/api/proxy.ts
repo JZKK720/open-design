@@ -14,9 +14,6 @@ export interface ProxyStreamRequest {
   // Caps the upstream completion length. Defaults to 8192 when unset so
   // pre-existing clients keep their old behavior.
   maxTokens?: number;
-  // Explicit opt-in for localhost / private-network model gateways.
-  // Remote endpoints stay on the stricter default path.
-  allowLocalNetwork?: boolean;
 }
 
 export interface ProxyStreamStartPayload {

@@ -34,15 +34,25 @@ Recommended update lane:
 4. Let the GHCR workflow republish the web and daemon images.
 5. On other machines, pull the refreshed images and restart the stack.
 
-For image-based deployment on other machines, use `compose.ghcr.yaml` instead of the local build compose file.
+The root `compose.yaml` now defaults to the verified fork GHCR path `ghcr.io/jzkk720/open-design-{daemon,web}:latest` while keeping the build sections available for explicit local rebuilds.
+
+Use `compose.ghcr.yaml` when you want the env-file driven GHCR lane explicitly, such as installer or update-helper flows.
 
 Example environment file:
 
 - `.env.ghcr.example`
 
-Set `OPEN_DESIGN_IMAGE_OWNER` to the GitHub owner of the fork that publishes the images. The example file uses a placeholder on purpose so the pull target does not silently drift to the wrong registry namespace.
+The example file now defaults to the verified fork GHCR path for this repo:
+
+- `OPEN_DESIGN_IMAGE_OWNER=jzkk720`
+- `OPEN_DESIGN_IMAGE_REPOSITORY=open-design`
+- `OPEN_DESIGN_IMAGE_TAG=latest`
+
+Override the owner or tag only when you are intentionally targeting a different publishing fork or a pinned release tag.
 
 For local machines that should follow future GHCR updates instead of rebuilding from source each time, keep a local `.env.ghcr` file based on the example and use the GHCR compose file on the same workstation.
+
+`compose.ghcr.yaml` also defaults to `ghcr.io/jzkk720/open-design-{daemon,web}:latest` when no env overrides are provided, so the fork GHCR lane is now the explicit deployment default.
 
 Concrete fork sync flow:
 
@@ -61,15 +71,46 @@ docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull
 docker compose --env-file .env.ghcr -f compose.ghcr.yaml up -d
 ```
 
-For a one-shot install on other machines without cloning the repository first, use the new installer scripts from a tagged Docker release.
+For repeatable host-side updates from a checked-out repo, use:
 
-Linux or macOS:
+- `scripts/update-open-design-ghcr.ps1`
+
+On Windows hosts, register the validated daily update task with:
+
+```powershell
+& .\scripts\register-open-design-ghcr-update-task.ps1
+```
+
+That creates or replaces the `OpenDesignGhcrUpdateDaily` scheduled task and points it at the repo-local GHCR update helper.
+
+For a one-shot install on other machines without cloning the repository first, use the fork-first installer commands below.
+
+These defaults pull the verified fork GHCR path:
+
+- `ghcr.io/jzkk720/open-design-daemon:latest`
+- `ghcr.io/jzkk720/open-design-web:latest`
+
+Linux or macOS, follow fork `latest`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JZKK720/open-design/main/scripts/install-open-design-docker.sh | bash
+```
+
+Windows PowerShell, follow fork `latest`:
+
+```powershell
+$script = Join-Path $env:TEMP 'install-open-design-docker.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/JZKK720/open-design/main/scripts/install-open-design-docker.ps1' -OutFile $script; & $script
+```
+
+If you need a pinned release instead of the moving `latest` tag, use the tagged installer commands.
+
+Linux or macOS, pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/<release-tag>/scripts/install-open-design-docker.sh | bash -s -- --owner <owner> --repository <repo> --repo-ref <release-tag> --image-tag <version>
 ```
 
-Windows PowerShell:
+Windows PowerShell, pinned release:
 
 ```powershell
 $script = Join-Path $env:TEMP 'install-open-design-docker.ps1'; Invoke-WebRequest 'https://raw.githubusercontent.com/<owner>/<repo>/<release-tag>/scripts/install-open-design-docker.ps1' -OutFile $script; & $script -Owner '<owner>' -Repository '<repo>' -RepoRef '<release-tag>' -ImageTag '<version>'
@@ -93,11 +134,17 @@ If GHCR is private on the target machine, run `docker login ghcr.io` first or pa
 - Runtime persistence stays on the daemon's built-in SQLite database at `/data/app.sqlite`; no PostgreSQL service is required for the current deployment shape.
 - Keep PostgreSQL as a later migration only if this moves beyond a single stack into a shared multi-instance service.
 
-Use the root compose file:
+Use the root compose file to follow the fork's moving `latest` images:
 
 ```bash
-docker compose build
+docker compose pull
 docker compose up -d
+```
+
+If you need to rebuild the images from the current local source instead of consuming fork GHCR `latest`, run:
+
+```bash
+docker compose up --build -d
 ```
 
 Default endpoints:
@@ -107,7 +154,7 @@ Default endpoints:
 
 If OpenSpace joins the same Docker network, route browser traffic to `open-design-web:80` and server-to-server calls to `open-design-daemon:7456`.
 
-For remote machines that should consume your fork's published images instead of building locally, use:
+For explicit env-file driven GHCR runs, installer flows, or per-machine owner or tag overrides, use:
 
 ```bash
 docker compose -f compose.ghcr.yaml up -d

@@ -42,3 +42,22 @@ pnpm --filter @open-design/desktop build
 pnpm --filter @open-design/packaged typecheck
 pnpm --filter @open-design/packaged build
 ```
+
+## Build-agent checklist
+
+When adapting app-layer builds, review in this order:
+
+1. Scope selection:
+	- web-only UI/runtime changes -> `@open-design/web`
+	- daemon API/CLI/agent dispatch changes -> `@open-design/daemon`
+	- Electron host/runtime changes -> `@open-design/desktop` and/or `@open-design/packaged`
+2. Validate with package-scoped `typecheck` and `build` for impacted apps before any workspace-wide gate.
+3. Keep app business logic free of sidecar concerns; sidecar-aware changes belong in each app's `sidecar/` layer or packaged runtime entry.
+4. Treat Next.js packaged runtime ownership rules as invariant: do not move Next output into daemon `OD_RESOURCE_ROOT`.
+
+## Current adaptation focus
+
+- Primary app adaptation surface: `apps/web` and `apps/desktop`.
+- In-scope app adaptations: branding/white-label shell changes, runtime shell behavior, and namespace-aware user-facing flows.
+- Preserve all existing user-visible and agent-driven functions while adapting the shell.
+- If app adaptation requires `apps/daemon` or `apps/packaged`, justify that boundary crossing before editing.

@@ -126,24 +126,66 @@ describe('loadConfig', () => {
 
   it('sets an explicit apiProtocol for new default configs', () => {
     expect(DEFAULT_CONFIG.apiProtocol).toBe('anthropic');
-    expect(DEFAULT_CONFIG.allowLocalApiBaseUrl).toBe(false);
     expect(DEFAULT_CONFIG.configMigrationVersion).toBe(1);
+  });
+
+  it('drops the legacy local gateway checkbox flag from saved configs', () => {
+    store.set(
+      'open-design:config',
+      JSON.stringify({
+        ...DEFAULT_CONFIG,
+        allowLocalApiBaseUrl: true,
+      }),
+    );
+
+    const config = loadConfig();
+
+    expect(config).not.toHaveProperty('allowLocalApiBaseUrl');
   });
 
   it('merges daemon API defaults into the local config', () => {
     const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      mode: 'api',
-      baseUrl: 'http://host.docker.internal:11434',
-      allowLocalApiBaseUrl: true,
-      model: 'qwen3.6:35B-3ab-q8_0',
-      apiProtocol: 'openai',
-      apiProviderBaseUrl: null,
+      config: {},
+      bootstrap: {
+        mode: 'api',
+        baseUrl: 'http://host.docker.internal:11434',
+        model: 'qwen3.6:35B-3ab-q8_0',
+        apiProtocol: 'openai',
+        apiProviderBaseUrl: null,
+      },
     });
 
     expect(merged.mode).toBe('api');
     expect(merged.baseUrl).toBe('http://host.docker.internal:11434');
-    expect(merged.allowLocalApiBaseUrl).toBe(true);
     expect(merged.model).toBe('qwen3.6:35B-3ab-q8_0');
+    expect(merged.apiProtocol).toBe('openai');
+    expect(merged.apiProviderBaseUrl).toBeNull();
+  });
+
+  it('keeps customized local API settings ahead of daemon bootstrap defaults', () => {
+    const merged = mergeDaemonConfig(
+      {
+        ...DEFAULT_CONFIG,
+        mode: 'api',
+        baseUrl: 'https://my-proxy.example.com',
+        model: 'my-custom-model',
+        apiProtocol: 'openai',
+        apiProviderBaseUrl: null,
+      },
+      {
+        config: {},
+        bootstrap: {
+          mode: 'api',
+          baseUrl: 'http://host.docker.internal:11434',
+          model: 'qwen3.6:35B-3ab-q8_0',
+          apiProtocol: 'openai',
+          apiProviderBaseUrl: null,
+        },
+      },
+    );
+
+    expect(merged.baseUrl).toBe('https://my-proxy.example.com');
+    expect(merged.model).toBe('my-custom-model');
     expect(merged.apiProtocol).toBe('openai');
     expect(merged.apiProviderBaseUrl).toBeNull();
   });
@@ -157,8 +199,10 @@ describe('loadConfig', () => {
         },
       },
       {
-        agentModels: {
-          daemon: { model: 'daemon-model' },
+        config: {
+          agentModels: {
+            daemon: { model: 'daemon-model' },
+          },
         },
       },
     );

@@ -225,13 +225,6 @@ function readAppConfigDefaultsFromEnv() {
     defaults.apiProtocol = apiProtocol;
   }
 
-  const allowLocalApiBaseUrl = readEnvBoolean(
-    'OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL',
-  );
-  if (allowLocalApiBaseUrl !== undefined) {
-    defaults.allowLocalApiBaseUrl = allowLocalApiBaseUrl;
-  }
-
   const apiProviderBaseUrl = readEnvString('OD_DEFAULT_API_PROVIDER_BASE_URL');
   if (apiProviderBaseUrl) {
     defaults.apiProviderBaseUrl = apiProviderBaseUrl;
@@ -1920,11 +1913,8 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
       return res.status(403).json({ error: 'cross-origin request rejected' });
     }
     try {
-      const config = {
-        ...APP_CONFIG_ENV_DEFAULTS,
-        ...(await readAppConfig(RUNTIME_DATA_DIR)),
-      };
-      res.json({ config });
+      const config = await readAppConfig(RUNTIME_DATA_DIR);
+      res.json({ config, bootstrap: APP_CONFIG_ENV_DEFAULTS });
     } catch (err) {
       res
         .status(500)
@@ -2607,7 +2597,15 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
   const redactAuthTokens = (text) =>
     text.replace(/Bearer [A-Za-z0-9_\-.+/=]+/g, 'Bearer [REDACTED]');
 
-  const validateExternalApiBaseUrl = (baseUrl, allowLocalNetwork = false) => {
+  const isLocalNetworkApiHost = (hostname) => (
+    LOCAL_API_HOSTS.has(hostname) ||
+    hostname.startsWith('169.254.') ||
+    hostname.startsWith('10.') ||
+    /^192\.168\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+  );
+
+  const validateExternalApiBaseUrl = (baseUrl) => {
     let parsed;
     try {
       parsed = new URL(baseUrl.replace(/\/+$/, ''));
@@ -2617,23 +2615,14 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       return { error: 'Only http/https allowed' };
     }
-    const isLocalNetwork = (
-      LOCAL_API_HOSTS.has(parsed.hostname) ||
-      parsed.hostname.startsWith('169.254.') ||
-      parsed.hostname.startsWith('10.') ||
-      /^192\.168\./.test(parsed.hostname) ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(parsed.hostname)
-    );
-    if (isLocalNetwork && !allowLocalNetwork) {
-      return { error: 'Internal IPs blocked', forbidden: true };
-    }
+    const isLocalNetwork = isLocalNetworkApiHost(parsed.hostname);
     return { parsed, isLocalNetwork };
   };
 
   app.post('/api/proxy/anthropic/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, allowLocalNetwork } =
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
     if (!baseUrl || !model) {
       return sendApiError(
@@ -2644,12 +2633,12 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl, allowLocalNetwork === true);
+    const validated = validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
       return sendApiError(
         res,
-        validated.forbidden ? 403 : 400,
-        validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
+        400,
+        'BAD_REQUEST',
         validated.error,
       );
     }
@@ -2742,7 +2731,7 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
   app.post('/api/proxy/openai/stream', async (req, res) => {
     /** @type {Partial<ProxyStreamRequest>} */
     const proxyBody = req.body || {};
-    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens, allowLocalNetwork } =
+    const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
     if (!baseUrl || !model) {
       return sendApiError(
@@ -2753,12 +2742,12 @@ export async function startServer({ port = 7456, host = process.env.OD_BIND_HOST
       );
     }
 
-    const validated = validateExternalApiBaseUrl(baseUrl, allowLocalNetwork === true);
+    const validated = validateExternalApiBaseUrl(baseUrl);
     if (validated.error) {
       return sendApiError(
         res,
-        validated.forbidden ? 403 : 400,
-        validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
+        400,
+        'BAD_REQUEST',
         validated.error,
       );
     }

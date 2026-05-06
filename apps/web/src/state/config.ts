@@ -1,4 +1,8 @@
-import type { AppConfigPrefs } from '@open-design/contracts';
+import type {
+  AppConfigBootstrap,
+  AppConfigPrefs,
+  AppConfigResponse,
+} from '@open-design/contracts';
 import { isOpenAICompatible } from '../providers/openai-compatible';
 import type {
   ApiProtocol,
@@ -29,7 +33,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   mode: 'daemon',
   apiKey: '',
   baseUrl: 'https://api.anthropic.com',
-  allowLocalApiBaseUrl: false,
   model: 'claude-sonnet-4-5',
   // New configs should be explicit. loadConfig() still detects parsed legacy
   // saved configs that did not have this field and migrates those from their
@@ -175,24 +178,66 @@ function inferApiProtocol(model: string, baseUrl: string): ApiProtocol {
   }
 }
 
+function hasCustomApiConfig(config: AppConfig): boolean {
+  return (
+    config.mode !== DEFAULT_CONFIG.mode ||
+    config.baseUrl !== DEFAULT_CONFIG.baseUrl ||
+    config.model !== DEFAULT_CONFIG.model ||
+    config.apiProtocol !== DEFAULT_CONFIG.apiProtocol ||
+    (config.apiProviderBaseUrl ?? null) !==
+      (DEFAULT_CONFIG.apiProviderBaseUrl ?? null)
+  );
+}
+
+function mergeDaemonBootstrap(
+  config: AppConfig,
+  bootstrap: AppConfigBootstrap | undefined,
+): AppConfig {
+  if (!bootstrap || hasCustomApiConfig(config)) return config;
+
+  const next: AppConfig = { ...config };
+  if (bootstrap.mode !== undefined) {
+    next.mode = bootstrap.mode;
+  }
+  if (bootstrap.baseUrl !== undefined) {
+    next.baseUrl = bootstrap.baseUrl;
+  }
+  if (bootstrap.model !== undefined) {
+    next.model = bootstrap.model;
+  }
+  if (bootstrap.apiProtocol !== undefined) {
+    next.apiProtocol = bootstrap.apiProtocol;
+  }
+  if (bootstrap.apiProviderBaseUrl !== undefined) {
+    next.apiProviderBaseUrl = bootstrap.apiProviderBaseUrl;
+  }
+  return next;
+}
+
 export function loadConfig(): AppConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_CONFIG, pet: normalizePet(DEFAULT_PET) };
-    const parsed = JSON.parse(raw) as Partial<AppConfig>;
+    const parsed = JSON.parse(raw) as Partial<AppConfig> & {
+      allowLocalApiBaseUrl?: boolean;
+    };
+    const {
+      allowLocalApiBaseUrl: _legacyAllowLocalApiBaseUrl,
+      ...parsedConfig
+    } = parsed;
     const parsedHasApiProtocol = Object.prototype.hasOwnProperty.call(
-      parsed,
+      parsedConfig,
       'apiProtocol',
     );
     const merged: AppConfig = {
       ...DEFAULT_CONFIG,
-      ...parsed,
-      mediaProviders: { ...(parsed.mediaProviders ?? {}) },
-      agentModels: { ...(parsed.agentModels ?? {}) },
-      pet: normalizePet(parsed.pet),
+      ...parsedConfig,
+      mediaProviders: { ...(parsedConfig.mediaProviders ?? {}) },
+      agentModels: { ...(parsedConfig.agentModels ?? {}) },
+      pet: normalizePet(parsedConfig.pet),
     };
 
-    if (parsed.configMigrationVersion !== CONFIG_MIGRATION_VERSION) {
+    if (parsedConfig.configMigrationVersion !== CONFIG_MIGRATION_VERSION) {
       // Migration v1: configs saved before apiProtocol existed need an explicit
       // protocol so old OpenAI-compatible endpoints keep routing correctly.
       // This is version-gated instead of only field-gated so a later imported
@@ -219,50 +264,33 @@ export function loadConfig(): AppConfig {
 
 export function mergeDaemonConfig(
   config: AppConfig,
-  daemonConfig: AppConfigPrefs | null,
+  daemonConfig: AppConfigResponse | null,
 ): AppConfig {
   if (!daemonConfig) return config;
 
   const next: AppConfig = { ...config };
+  const persisted = daemonConfig.config;
 
-  if (daemonConfig.onboardingCompleted != null) {
-    next.onboardingCompleted = daemonConfig.onboardingCompleted;
+  if (persisted.onboardingCompleted != null) {
+    next.onboardingCompleted = persisted.onboardingCompleted;
   }
-  if (daemonConfig.agentId !== undefined) {
-    next.agentId = daemonConfig.agentId;
+  if (persisted.agentId !== undefined) {
+    next.agentId = persisted.agentId;
   }
-  if (daemonConfig.skillId !== undefined) {
-    next.skillId = daemonConfig.skillId;
+  if (persisted.skillId !== undefined) {
+    next.skillId = persisted.skillId;
   }
-  if (daemonConfig.designSystemId !== undefined) {
-    next.designSystemId = daemonConfig.designSystemId;
+  if (persisted.designSystemId !== undefined) {
+    next.designSystemId = persisted.designSystemId;
   }
-  if (daemonConfig.agentModels) {
+  if (persisted.agentModels) {
     next.agentModels = {
       ...(next.agentModels ?? {}),
-      ...daemonConfig.agentModels,
+      ...persisted.agentModels,
     };
   }
-  if (daemonConfig.mode !== undefined) {
-    next.mode = daemonConfig.mode;
-  }
-  if (daemonConfig.baseUrl !== undefined) {
-    next.baseUrl = daemonConfig.baseUrl;
-  }
-  if (daemonConfig.allowLocalApiBaseUrl !== undefined) {
-    next.allowLocalApiBaseUrl = daemonConfig.allowLocalApiBaseUrl;
-  }
-  if (daemonConfig.model !== undefined) {
-    next.model = daemonConfig.model;
-  }
-  if (daemonConfig.apiProtocol !== undefined) {
-    next.apiProtocol = daemonConfig.apiProtocol;
-  }
-  if (daemonConfig.apiProviderBaseUrl !== undefined) {
-    next.apiProviderBaseUrl = daemonConfig.apiProviderBaseUrl;
-  }
 
-  return next;
+  return mergeDaemonBootstrap(next, daemonConfig.bootstrap);
 }
 
 export function saveConfig(config: AppConfig): void {
@@ -294,12 +322,12 @@ export async function syncMediaProvidersToDaemon(
   }
 }
 
-export async function fetchDaemonConfig(): Promise<AppConfigPrefs | null> {
+export async function fetchDaemonConfig(): Promise<AppConfigResponse | null> {
   try {
     const res = await fetch('/api/app-config');
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.config ?? null;
+    return data && typeof data === 'object' ? (data as AppConfigResponse) : null;
   } catch {
     return null;
   }
@@ -312,12 +340,6 @@ export async function syncConfigToDaemon(config: AppConfig): Promise<void> {
     agentModels: config.agentModels,
     skillId: config.skillId,
     designSystemId: config.designSystemId,
-    mode: config.mode,
-    baseUrl: config.baseUrl,
-    allowLocalApiBaseUrl: config.allowLocalApiBaseUrl,
-    model: config.model,
-    apiProtocol: config.apiProtocol,
-    apiProviderBaseUrl: config.apiProviderBaseUrl ?? null,
   };
   try {
     await fetch('/api/app-config', {

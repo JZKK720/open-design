@@ -539,7 +539,6 @@ describe('streamMessageOpenAI', () => {
         mode: 'api',
         apiKey: '',
         baseUrl: 'http://host.docker.internal:11434',
-        allowLocalApiBaseUrl: true,
         model: 'llama3.1',
         agentId: null,
         skillId: null,
@@ -556,10 +555,10 @@ describe('streamMessageOpenAI', () => {
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init).toBeDefined();
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      allowLocalNetwork: true,
       baseUrl: 'http://host.docker.internal:11434',
       model: 'llama3.1',
     });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty('allowLocalNetwork');
     expect(JSON.parse(String(init?.body))).not.toHaveProperty('apiKey');
   });
 });

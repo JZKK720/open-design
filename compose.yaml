@@ -2,9 +2,11 @@ name: open-design
 
 services:
   open-design-daemon:
+    image: ghcr.io/${OPEN_DESIGN_IMAGE_OWNER:-jzkk720}/${OPEN_DESIGN_IMAGE_REPOSITORY:-open-design}-daemon:${OPEN_DESIGN_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.daemon
+    pull_policy: always
     environment:
       OD_BIND_HOST: 0.0.0.0
       OD_DATA_DIR: /data
@@ -13,7 +15,6 @@ services:
       OD_DEFAULT_API_PROTOCOL: ${OD_DEFAULT_API_PROTOCOL:-}
       OD_DEFAULT_API_BASE_URL: ${OD_DEFAULT_API_BASE_URL:-}
       OD_DEFAULT_API_MODEL: ${OD_DEFAULT_API_MODEL:-}
-      OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL: ${OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -23,9 +24,11 @@ services:
       - open-design-data:/data
 
   open-design-web:
+    image: ghcr.io/${OPEN_DESIGN_IMAGE_OWNER:-jzkk720}/${OPEN_DESIGN_IMAGE_REPOSITORY:-open-design}-web:${OPEN_DESIGN_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.web
+    pull_policy: always
     depends_on:
       - open-design-daemon
     ports:

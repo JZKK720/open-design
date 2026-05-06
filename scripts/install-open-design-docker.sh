@@ -2,35 +2,33 @@
 
 set -euo pipefail
 
-owner=""
+owner="jzkk720"
 repository="open-design"
 repo_ref="main"
-image_tag="main"
+image_tag="latest"
 install_dir="$(pwd)/open-design-docker"
 mode=""
 api_protocol=""
 api_base_url=""
 api_model=""
-allow_local_api_base_url=""
 ghcr_username=""
 ghcr_token=""
 skip_start="false"
 
 usage() {
   cat <<'EOF'
-Usage: install-open-design-docker.sh --owner <github-owner> [options]
+Usage: install-open-design-docker.sh [options]
 
 Options:
-  --owner <value>                      GitHub owner that publishes the GHCR images.
+  --owner <value>                      GitHub owner that publishes the GHCR images. Default: jzkk720
   --repository <value>                 Repository name. Default: open-design
   --repo-ref <value>                   Git ref used to download compose.ghcr.yaml. Default: main
-  --image-tag <value>                  GHCR image tag to deploy. Default: main
+  --image-tag <value>                  GHCR image tag to deploy. Default: latest
   --install-dir <value>                Target directory for compose. Default: ./open-design-docker
   --mode <value>                       Optional OD_DEFAULT_MODE value.
   --api-protocol <value>               Optional OD_DEFAULT_API_PROTOCOL value.
   --api-base-url <value>               Optional OD_DEFAULT_API_BASE_URL value.
   --api-model <value>                  Optional OD_DEFAULT_API_MODEL value.
-  --allow-local-api-base-url <value>   Optional OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL value.
   --ghcr-username <value>              Optional GHCR username for docker login.
   --ghcr-token <value>                 Optional GHCR token for docker login.
   --skip-start                         Only pull the images; do not run docker compose up -d.
@@ -87,10 +85,6 @@ while [[ $# -gt 0 ]]; do
       api_model="${2:-}"
       shift 2
       ;;
-    --allow-local-api-base-url)
-      allow_local_api_base_url="${2:-}"
-      shift 2
-      ;;
     --ghcr-username)
       ghcr_username="${2:-}"
       shift 2
@@ -113,10 +107,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$owner" ]]; then
-  fail "--owner is required"
-fi
-
 need_command curl
 need_command docker
 
@@ -136,7 +126,6 @@ OD_DEFAULT_MODE=${mode}
 OD_DEFAULT_API_PROTOCOL=${api_protocol}
 OD_DEFAULT_API_BASE_URL=${api_base_url}
 OD_DEFAULT_API_MODEL=${api_model}
-OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL=${allow_local_api_base_url}
 EOF
 
 if [[ -n "$ghcr_username" && -n "$ghcr_token" ]]; then
