@@ -86,6 +86,71 @@ docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull
 docker compose --env-file .env.ghcr -f compose.ghcr.yaml up -d
 ```
 
+Validate the running images after install or update:
+
+- Do not trust the configured image string alone. A container can still be running an older image object even when `ghcr.io/<owner>/<repo>-*:latest` has moved.
+- The source of truth is the container's actual image ID from `docker inspect`, compared with the current tag target from `docker image inspect`.
+- If you want the validation to reflect the newest registry state, run the `pull` step first.
+
+Linux or macOS:
+
+```bash
+checks=(
+  "daemon|open-design-open-design-daemon-1|ghcr.io/jzkk720/open-design-daemon:latest"
+  "web|open-design-open-design-web-1|ghcr.io/jzkk720/open-design-web:latest"
+)
+
+for entry in "${checks[@]}"; do
+  IFS='|' read -r service container tag <<< "$entry"
+  running_id="$(docker inspect --format '{{.Image}}' "$container")"
+  running_rev="$(docker image inspect "$running_id" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+  tag_id="$(docker image inspect "$tag" --format '{{.Id}}')"
+  tag_rev="$(docker image inspect "$tag" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+
+  if [ "$running_id" = "$tag_id" ]; then
+    match=true
+  else
+    match=false
+  fi
+
+  printf '%s\n  container=%s\n  running_id=%s\n  running_revision=%s\n  tag=%s\n  tag_id=%s\n  tag_revision=%s\n  matches_current_tag=%s\n\n' \
+    "$service" "$container" "$running_id" "$running_rev" "$tag" "$tag_id" "$tag_rev" "$match"
+done
+```
+
+Windows PowerShell:
+
+```powershell
+$checks = @(
+  @{ Service='daemon'; Container='open-design-open-design-daemon-1'; Tag='ghcr.io/jzkk720/open-design-daemon:latest' },
+  @{ Service='web'; Container='open-design-open-design-web-1'; Tag='ghcr.io/jzkk720/open-design-web:latest' }
+)
+
+$checks | ForEach-Object {
+  $container = (docker inspect $_.Container | ConvertFrom-Json)[0]
+  $tagImage = (docker image inspect $_.Tag | ConvertFrom-Json)[0]
+  $runningImage = (docker image inspect $container.Image | ConvertFrom-Json)[0]
+
+  [pscustomobject]@{
+    Service = $_.Service
+    Container = $_.Container
+    RunningImageId = $container.Image
+    RunningRevision = $runningImage.Config.Labels.'org.opencontainers.image.revision'
+    CurrentTag = $_.Tag
+    CurrentTagId = $tagImage.Id
+    CurrentTagRevision = $tagImage.Config.Labels.'org.opencontainers.image.revision'
+    MatchesCurrentTag = ($container.Image -eq $tagImage.Id)
+  }
+} | Format-List
+```
+
+Expected result:
+
+- `MatchesCurrentTag = true` means the running container now matches the current local `latest` tag target.
+- `MatchesCurrentTag = false` means the container is still pinned to an older image object and should be recreated with `docker compose up -d` or `docker compose up -d --force-recreate`.
+
+If you override the Compose project name with `-p`, adjust the container names in the snippets before running them.
+
 For repeatable host-side updates from a checked-out repo, use:
 
 - `scripts/update-open-design-ghcr.ps1`
