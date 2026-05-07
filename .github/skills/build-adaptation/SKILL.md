@@ -58,6 +58,7 @@ If the task requires `apps/daemon`, `apps/packaged`, or `packages/*`, explain th
    - prefer the upstream GHCR consume lane only when required fork-only customizations are already upstream or do not change image contents
    - if required CubeCloud customizations live only on `fork/main` and affect runtime images, use the fork GHCR publish lane as the deployment source of truth
    - the default `compose.yaml` runtime should follow fork GHCR `latest` unless the operator explicitly asks to rebuild from local source
+   - local repo changes and validated `fork/main` pushes should refresh fork GHCR `latest` first so downstream machines only need pull/update
    - a successful local source build does not prove pulled GHCR images contain the same changes
    - workflow presence alone does not prove a fork package already exists; verify actual publication state when the task depends on it
 3. State the invariants that must hold after the change.
@@ -84,8 +85,8 @@ If the task requires `apps/daemon`, `apps/packaged`, or `packages/*`, explain th
    - orchestration uses shared primitives instead of copied stamp or process matching logic
 8. For fork-published GHCR images, define the upstream sync policy explicitly.
    - keep `fork/main` authoritative for CubeCloud-specific runtime changes
-   - cherry-pick is valid when you want selected upstream fixes without adopting unrelated upstream image changes
-   - merge or rebase is valid when you want a broader upstream refresh and will validate the combined surface before republishing
+   - owner-reviewed cherry-picks from `upstream/main` are the default sync method for carrying upstream fixes into `fork/main`
+   - merge or rebase is an explicit exception for a broader upstream refresh and must be treated as a larger validation and republish event
 
 ## Review mode
 

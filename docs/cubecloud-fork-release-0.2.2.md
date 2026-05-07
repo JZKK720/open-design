@@ -31,7 +31,10 @@ This extraction should ship together with the cherry-pick batch because it direc
 - Workspace package manifests and internal workspace references are now bumped to `0.2.2`.
 - Compose and installer surfaces no longer expose the removed `OD_DEFAULT_ALLOW_LOCAL_API_BASE_URL` knob.
 - A fresh upstream `open-design-v0.4.0` dry-run merge now conflicts in 7 files instead of 10, and the shared contract conflicts are gone.
-- Actual GHCR publication is still pending a real release commit/tag or an explicitly approved manual push path with authenticated GHCR credentials.
+- The validated release-prep commit was pushed to fork `main` and published as commit `b6e479c`.
+- `release-docker` published `ghcr.io/jzkk720/open-design-daemon:0.2.2` and `ghcr.io/jzkk720/open-design-web:0.2.2`, and refreshed both `latest` tags.
+- The GitHub release `open-design-docker-v0.2.2` now exists and points at commit `b6e479c`.
+- Checked-out and downstream machines should follow fork GHCR `latest` by default; versioned tags such as `0.2.2` are for pinned deployments.
 
 ## Cherry-pick shortlist
 
@@ -115,9 +118,15 @@ pnpm typecheck
 
 If you cherry-pick `02638af`, keep the `tools-pack` build check mandatory.
 
-## Release execution
+## Future release execution
 
-After the cherry-picks are committed onto `fork/main` and the remaining proxy/settings extraction is either completed or intentionally deferred, run the existing Docker release workflow with:
+After the owner cherry-picks the next validated upstream fix batch onto `fork/main`, use this sequence:
+
+1. Push the validated `fork/main` branch so `.github/workflows/publish-ghcr.yml` refreshes the fork GHCR `latest` lane.
+2. Let checked-out and downstream machines update by pulling `latest` and restarting.
+3. Run the existing Docker release workflow only when you also want a named versioned release on top of the refreshed `latest` lane.
+
+When a named Docker release is required, run the existing Docker release workflow with:
 
 - `version`: `0.2.2`
 - `publish_latest`: `true`

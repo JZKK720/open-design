@@ -180,13 +180,15 @@ The one area likely to remain fork-sensitive even after cleanup is daemon-side l
 ## Recommended Sync Strategy
 
 1. Finish extracting CubeCloud local/private gateway policy out of shared proxy/settings/provider files.
-2. Keep branding, GHCR, compose, installer, and packaging resources as fork overlay.
-3. Re-run the upstream `0.4.0` merge dry-run after the proxy seam cleanup.
-4. If the conflict set drops to the narrow daemon-only boundary, switch the fork from selective cherry-picks to a regular merge-based sync flow.
-5. Republish fork GHCR after each validated upstream sync.
+2. Keep branding, GHCR, compose, installer, packaging resources, local data paths, env defaults, and credentials as fork overlay.
+3. Keep owner-reviewed cherry-picks from `upstream/main` as the default way to carry upstream fixes into `fork/main`.
+4. Validate each cherry-pick batch on the fork before pushing.
+5. Push validated `fork/main` updates so `.github/workflows/publish-ghcr.yml` refreshes the fork GHCR `latest` lane.
+6. Use `.github/workflows/release-docker.yml` only when you also want a named versioned Docker release on top of the refreshed `latest` lane.
+7. Keep downstream machines on the fork GHCR `latest` lane so they only need pull/update after the fork owner republishes.
 
 ## Short-term conclusion
 
-Today, before cleanup, selective cherry-picks are still the lower-risk way to absorb upstream fixes.
+Today, selective owner-reviewed cherry-picks are the lower-risk and preferred way to absorb upstream fixes while preserving CubeCloud-specific runtime behavior.
 
-Long-term, if the goal is to stay close to upstream `0.4.x` and later while preserving CubeCloud identity and local environment defaults, the fork should be restructured so CubeCloud is an overlay plus env-driven deployment profile rather than an ongoing divergence inside daemon, web, and contract runtime files.
+Long-term, even if the conflict set drops further, keep the fork on a cherry-pick-first update policy unless the owner explicitly chooses a broader merge/rebase event. The goal is for `fork/main` to stay authoritative for CubeCloud identity and env-driven deployment behavior, with fork GHCR `latest` as the operational update lane for other machines.

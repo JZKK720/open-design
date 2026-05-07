@@ -88,6 +88,7 @@ Use this sequence when adapting Open Design build flows for another app or produ
 	- Prefer the upstream GHCR consume lane only when the required runtime behavior already exists upstream or the fork-only changes do not affect image contents.
 	- If CubeCloud customizations on `fork/main` affect the runtime images, treat the fork GHCR publish lane as the deployment source of truth.
 	- The default `compose.yaml` runtime should follow the fork GHCR `latest` tag unless the operator explicitly asks to rebuild from local source.
+	- Local repo changes and validated `fork/main` updates should refresh the fork GHCR `latest` tags first; downstream machines should only need `docker compose pull` plus `up -d` to take effect.
 	- A successful local source build does not prove the pulled GHCR images contain the same changes.
 	- Workflow presence proves the repo is configured to publish images, not that a fork package already exists or is the deployed source of truth.
 3. Run the narrowest validating command first (package-scoped `pnpm --filter ... typecheck|test|build`), then run workspace gates (`pnpm typecheck`, `pnpm test`, and `pnpm build` when build surfaces changed).
@@ -98,9 +99,9 @@ Use this sequence when adapting Open Design build flows for another app or produ
 	- path derivation is namespace-scoped and does not include daemon/web port values
 	- orchestration code consumes package primitives instead of hand-rolled arg/regex logic
 6. For packaged flows, validate `tools-pack` lanes independently from local `tools-dev` flows; release artifact naming stays canonical while local install paths may be namespace-scoped for multi-instance checks.
-7. If the fork is the GHCR publishing lane, keep `fork/main` authoritative for CubeCloud-specific changes and choose the upstream sync method intentionally:
-	- cherry-pick when you want selected upstream fixes without taking unrelated runtime or release changes
-	- merge or rebase when you want a broader upstream refresh and are prepared to validate the full combined surface before republishing
+7. If the fork is the GHCR publishing lane, keep `fork/main` authoritative for CubeCloud-specific changes and use owner-reviewed cherry-picks from `upstream/main` as the default sync method:
+	- cherry-pick selected upstream fixes onto `fork/main`, validate the fork-owned runtime behavior, and let the fork GHCR workflows refresh `latest`
+	- only use merge or rebase when the owner explicitly asks for a broader upstream refresh and is prepared to validate and republish the full combined surface
 
 If a build-agent proposal skips classification, narrow validation, or namespace/path invariants, treat it as incomplete.
 
@@ -112,6 +113,7 @@ This repository is currently being adapted for another app/product shell. For bu
 - Primary edit surfaces: `apps/web`, `apps/desktop`, `tools/dev`, and `tools/pack`.
 - For containerized distribution decisions, use `docs/cubecloud-openspace-installation.md` as the reference for fork-published GHCR images, install scripts, and update lanes.
 - Keep CubeCloud customizations on `fork/main`; only point deployments at upstream GHCR when that does not drop required fork-only runtime behavior.
+- Treat fork GHCR `latest` as the operational lane for local repo changes and validated `fork/main` updates; versioned tags are optional pinned overlays, not the default update path.
 - Preserve full existing product behavior. Do not remove, narrow, or silently change existing functions as a shortcut for adaptation work.
 - Allowed agent actions: review build changes, generate adaptation patches, run validation commands, and prepare release artifacts.
 - If a change requires stepping into `apps/daemon`, `apps/packaged`, or `packages/*`, explain the dependency hop before editing and keep the change minimal.

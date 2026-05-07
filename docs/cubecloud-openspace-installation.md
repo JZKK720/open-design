@@ -28,11 +28,18 @@ Docker release outputs use these conventions:
 
 Recommended update lane:
 
-1. Keep your CubeCloud customizations on your fork's `main` branch.
-2. Regularly merge or rebase `upstream/main` into your fork's `main`.
-3. Push the updated fork branch.
-4. Let the GHCR workflow republish the web and daemon images.
-5. On other machines, pull the refreshed images and restart the stack.
+1. Keep your CubeCloud branding, local data paths, env defaults, and credentials on your fork's `main` branch.
+2. As the fork owner, cherry-pick selected fixes from `upstream/main` onto your fork's `main` instead of treating merge or rebase as the normal update path.
+3. Validate the updated fork branch locally.
+4. Push the validated `fork/main` branch and let `.github/workflows/publish-ghcr.yml` refresh the fork GHCR `main`, `sha-*`, and `latest` tags.
+5. Run `.github/workflows/release-docker.yml` only when you also want a named versioned Docker release in addition to the refreshed `latest` lane.
+6. On other machines, pull the refreshed fork `latest` images and restart the stack.
+
+Operational rule:
+
+- local repo changes and validated `fork/main` updates should always land on the fork GHCR `latest` lane first
+- other machines should take effect by `docker compose pull` plus `docker compose up -d`
+- the branch tag `main` is a convenience branch tag, but `latest` is the default deployment lane for checked-out repos and downstream machines
 
 The root `compose.yaml` now defaults to the verified fork GHCR path `ghcr.io/jzkk720/open-design-{daemon,web}:latest` while keeping the build sections available for explicit local rebuilds.
 
@@ -59,9 +66,17 @@ Concrete fork sync flow:
 ```bash
 git fetch upstream
 git checkout main
-git merge upstream/main
+git cherry-pick <upstream-commit>...
+pnpm --filter @open-design/web test
+pnpm --filter @open-design/desktop build
+pnpm --filter @open-design/packaged build
+pnpm --filter @open-design/tools-dev build
+pnpm --filter @open-design/tools-pack build
+pnpm typecheck
 git push origin main
 ```
+
+That push updates the fork GHCR publish lane automatically. Other machines should stay on `.env.ghcr` plus `compose.ghcr.yaml` with `OPEN_DESIGN_IMAGE_TAG=latest` so they only need pull/update after the fork owner republishes.
 
 Example update flow:
 

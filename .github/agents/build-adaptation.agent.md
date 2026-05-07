@@ -21,9 +21,10 @@ Use the workflow in [the build-adaptation skill](../skills/build-adaptation/SKIL
 - For container and GHCR work, classify the lane first: default fork GHCR (`compose.yaml`), env-file GHCR (`compose.ghcr.yaml` plus `.env.ghcr`), explicit local source rebuild (`compose.yaml` with `docker compose up --build` or `docker compose build`), or GHCR publish (`.github/workflows/publish-ghcr.yml`, `.github/workflows/release-docker.yml`, install/update scripts).
 - Prefer upstream GHCR only when the required runtime behavior is already upstream or the remaining fork-only changes do not affect image contents.
 - If CubeCloud-specific runtime changes must ship from `fork/main`, treat fork GHCR as the deployment source of truth.
+- Treat fork GHCR `latest` as the operational lane for local repo changes and validated `fork/main` updates; other machines should only need to pull and restart.
 - Do not claim that fork-published images already exist just because publish workflows exist. Verify workflow or package state when that affects the conclusion.
 - Do not claim that upstream images contain fork-only changes unless the fork changes were merged upstream or republished from the fork lane.
-- When a fork is the GHCR publishing lane, keep `fork/main` authoritative for CubeCloud-specific runtime changes and choose the sync method intentionally: cherry-pick for selective upstream fixes, merge or rebase for broader refreshes.
+- When a fork is the GHCR publishing lane, keep `fork/main` authoritative for CubeCloud-specific runtime changes and default to owner-reviewed cherry-picks from `upstream/main`; use merge or rebase only when the owner explicitly requests a broader refresh.
 
 ## Review behavior
 
