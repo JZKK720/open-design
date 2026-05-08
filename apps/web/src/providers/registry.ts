@@ -1,4 +1,12 @@
 import type {
+  ConnectorDetail,
+  ConnectorConnectResponse,
+  ConnectorDiscoveryResponse,
+  ConnectorDetailResponse,
+  ConnectorListResponse,
+  ConnectorStatusResponse,
+} from '@open-design/contracts';
+import type {
   AgentInfo,
   AppVersionInfo,
   AppVersionResponse,
@@ -14,6 +22,9 @@ import type {
   DeployProjectFileResponse,
   DesignSystemDetail,
   DesignSystemSummary,
+  LiveArtifact,
+  LiveArtifactRefreshLogEntry,
+  LiveArtifactSummary,
   ProjectDeploymentsResponse,
   PromptTemplateDetail,
   PromptTemplateSummary,
@@ -24,13 +35,39 @@ import type {
 } from '../types';
 import type { ArtifactManifest } from '../artifacts/types';
 
-export async function fetchAgents(): Promise<AgentInfo[]> {
+export const DEFAULT_DEPLOY_PROVIDER_ID = 'vercel-self';
+export const CLOUDFLARE_PAGES_PROVIDER_ID = 'cloudflare-pages';
+export const DEPLOY_PROVIDER_IDS = [
+  DEFAULT_DEPLOY_PROVIDER_ID,
+  CLOUDFLARE_PAGES_PROVIDER_ID,
+] as const;
+
+export type WebDeployProviderId = (typeof DEPLOY_PROVIDER_IDS)[number];
+
+export type WebDeployConfigResponse = DeployConfigResponse;
+export type WebUpdateDeployConfigRequest = UpdateDeployConfigRequest;
+export type WebDeploymentInfo = ProjectDeploymentsResponse['deployments'][number];
+export type WebDeployProjectFileResponse = DeployProjectFileResponse;
+
+export function isDeployProviderId(value: unknown): value is WebDeployProviderId {
+  return typeof value === 'string' && (DEPLOY_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+function deployProviderQuery(providerId?: WebDeployProviderId): string {
+  return providerId ? `?providerId=${encodeURIComponent(providerId)}` : '';
+}
+
+export async function fetchAgents(options?: { throwOnError?: boolean }): Promise<AgentInfo[]> {
   try {
     const resp = await fetch('/api/agents');
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      if (options?.throwOnError) throw new Error(`agents ${resp.status}`);
+      return [];
+    }
     const json = (await resp.json()) as { agents: AgentInfo[] };
     return json.agents ?? [];
-  } catch {
+  } catch (err) {
+    if (options?.throwOnError) throw err;
     return [];
   }
 }
@@ -176,6 +213,119 @@ export async function daemonIsLive(): Promise<boolean> {
   }
 }
 
+export async function fetchConnectors(): Promise<ConnectorDetail[]> {
+  try {
+    const resp = await fetch('/api/connectors');
+    if (!resp.ok) return [];
+    const json = (await resp.json()) as ConnectorListResponse;
+    return json.connectors ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchConnectorStatuses(): Promise<ConnectorStatusResponse['statuses']> {
+  try {
+    const resp = await fetch('/api/connectors/status');
+    if (!resp.ok) return {};
+    const json = (await resp.json()) as ConnectorStatusResponse;
+    return json.statuses ?? {};
+  } catch {
+    return {};
+  }
+}
+
+let connectorDiscoveryCache: ConnectorDetail[] | null = null;
+let connectorDiscoveryPromise: Promise<ConnectorDetail[]> | null = null;
+
+export async function fetchConnectorDiscovery(options: { refresh?: boolean } = {}): Promise<ConnectorDetail[]> {
+  if (options.refresh) {
+    connectorDiscoveryCache = null;
+    connectorDiscoveryPromise = null;
+  }
+  if (connectorDiscoveryCache && !options.refresh) return connectorDiscoveryCache;
+  if (connectorDiscoveryPromise && !options.refresh) return connectorDiscoveryPromise;
+
+  const promise = (async () => {
+    try {
+      const params = options.refresh ? '?refresh=true' : '';
+      const resp = await fetch(`/api/connectors/discovery${params}`);
+      if (!resp.ok) return [];
+      const json = (await resp.json()) as ConnectorDiscoveryResponse;
+      const connectors = json.connectors ?? [];
+      connectorDiscoveryCache = connectors;
+      return connectors;
+    } catch {
+      return [];
+    } finally {
+      connectorDiscoveryPromise = null;
+    }
+  })();
+  connectorDiscoveryPromise = promise;
+  return promise;
+}
+
+export async function connectConnector(connectorId: string): Promise<ConnectorDetail | null> {
+  let authWindow: Window | null = null;
+  try {
+    authWindow = window.open('about:blank', '_blank');
+    renderConnectorAuthLoading(authWindow);
+    const resp = await fetch(`/api/connectors/${encodeURIComponent(connectorId)}/connect`, {
+      method: 'POST',
+    });
+    if (!resp.ok) {
+      authWindow?.close();
+      return null;
+    }
+    const json = (await resp.json()) as ConnectorConnectResponse;
+    if (json.auth?.kind === 'redirect_required' && json.auth.redirectUrl) {
+      if (authWindow) {
+        authWindow.location.href = json.auth.redirectUrl;
+      } else {
+        window.open(json.auth.redirectUrl, '_blank');
+      }
+    } else {
+      authWindow?.close();
+    }
+    return json.connector ?? null;
+  } catch {
+    authWindow?.close();
+    return null;
+  }
+}
+
+function renderConnectorAuthLoading(authWindow: Window | null): void {
+  if (!authWindow) return;
+  try {
+    authWindow.document.title = 'Connecting…';
+    authWindow.document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;margin:0;background:#0f1115;color:#f6f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+        <div style="display:grid;gap:14px;justify-items:center;text-align:center;padding:32px;">
+          <div aria-hidden="true" style="width:28px;height:28px;border-radius:999px;border:3px solid rgba(255,255,255,.22);border-top-color:#fff;animation:od-spin .8s linear infinite;"></div>
+          <div style="font-size:15px;font-weight:600;">Connecting…</div>
+          <div style="max-width:280px;color:rgba(246,247,251,.72);font-size:13px;line-height:1.5;">Preparing the authorization flow. This window will redirect when the provider is ready.</div>
+        </div>
+        <style>@keyframes od-spin{to{transform:rotate(360deg)}}</style>
+      </main>
+    `;
+  } catch {
+    /* Popup may be unavailable or already navigated; ignore. */
+  }
+}
+
+export async function disconnectConnector(connectorId: string): Promise<ConnectorDetail | null> {
+  try {
+    const resp = await fetch(`/api/connectors/${encodeURIComponent(connectorId)}/connection`, {
+      method: 'DELETE',
+    });
+    if (!resp.ok) return null;
+    const json = (await resp.json()) as ConnectorDetailResponse;
+    return json.connector ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function isAppVersionInfo(value: unknown): value is AppVersionInfo {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<AppVersionInfo>;
@@ -209,40 +359,48 @@ export async function fetchSkillExample(id: string): Promise<string | null> {
   }
 }
 
-export async function fetchDeployConfig(): Promise<DeployConfigResponse | null> {
+export async function fetchDeployConfig(
+  providerId?: WebDeployProviderId,
+): Promise<WebDeployConfigResponse | null> {
   try {
-    const resp = await fetch('/api/deploy/config');
+    const resp = await fetch(`/api/deploy/config${deployProviderQuery(providerId)}`);
     if (!resp.ok) return null;
-    return (await resp.json()) as DeployConfigResponse;
+    return (await resp.json()) as WebDeployConfigResponse;
   } catch {
     return null;
   }
 }
 
 export async function updateDeployConfig(
-  input: UpdateDeployConfigRequest,
-): Promise<DeployConfigResponse | null> {
+  input: WebUpdateDeployConfigRequest,
+): Promise<WebDeployConfigResponse | null> {
   try {
     const resp = await fetch('/api/deploy/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-    if (!resp.ok) return null;
-    return (await resp.json()) as DeployConfigResponse;
-  } catch {
+    if (!resp.ok) {
+      const payload = (await resp.json().catch(() => null)) as
+        | { error?: { message?: string }; message?: string }
+        | null;
+      throw new Error(payload?.error?.message || payload?.message || `Could not save deploy config (${resp.status})`);
+    }
+    return (await resp.json()) as WebDeployConfigResponse;
+  } catch (err) {
+    if (err instanceof Error) throw err;
     return null;
   }
 }
 
 export async function fetchProjectDeployments(
   projectId: string,
-): Promise<ProjectDeploymentsResponse['deployments']> {
+): Promise<WebDeploymentInfo[]> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/deployments`);
     if (!resp.ok) return [];
     const json = (await resp.json()) as ProjectDeploymentsResponse;
-    return json.deployments ?? [];
+    return (json.deployments ?? []) as WebDeploymentInfo[];
   } catch {
     return [];
   }
@@ -251,11 +409,12 @@ export async function fetchProjectDeployments(
 export async function deployProjectFile(
   projectId: string,
   fileName: string,
-): Promise<DeployProjectFileResponse> {
+  providerId: WebDeployProviderId = DEFAULT_DEPLOY_PROVIDER_ID,
+): Promise<WebDeployProjectFileResponse> {
   const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/deploy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName, providerId: 'vercel-self' }),
+    body: JSON.stringify({ fileName, providerId }),
   });
   if (!resp.ok) {
     const payload = (await resp.json().catch(() => null)) as
@@ -263,13 +422,13 @@ export async function deployProjectFile(
       | null;
     throw new Error(payload?.error?.message || payload?.message || `Deploy failed (${resp.status})`);
   }
-  return (await resp.json()) as DeployProjectFileResponse;
+  return (await resp.json()) as WebDeployProjectFileResponse;
 }
 
 export async function checkDeploymentLink(
   projectId: string,
   deploymentId: string,
-): Promise<DeployProjectFileResponse> {
+): Promise<WebDeployProjectFileResponse> {
   const resp = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/deployments/${encodeURIComponent(deploymentId)}/check-link`,
     { method: 'POST' },
@@ -280,7 +439,7 @@ export async function checkDeploymentLink(
       | null;
     throw new Error(payload?.error?.message || payload?.message || `Link check failed (${resp.status})`);
   }
-  return (await resp.json()) as DeployProjectFileResponse;
+  return (await resp.json()) as WebDeployProjectFileResponse;
 }
 
 // Project files — all paths are scoped under .od/projects/<id>/ on disk.
@@ -293,6 +452,184 @@ export async function fetchProjectFiles(projectId: string): Promise<ProjectFile[
     return json.files ?? [];
   } catch {
     return [];
+  }
+}
+
+export async function fetchLiveArtifacts(projectId: string): Promise<LiveArtifactSummary[]> {
+  try {
+    const resp = await fetch(`/api/live-artifacts?projectId=${encodeURIComponent(projectId)}`);
+    if (!resp.ok) return [];
+    const json = (await resp.json()) as {
+      artifacts?: LiveArtifactSummary[];
+      liveArtifacts?: LiveArtifactSummary[];
+    };
+    return json.liveArtifacts ?? json.artifacts ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchLiveArtifact(
+  projectId: string,
+  artifactId: string,
+): Promise<LiveArtifact | null> {
+  try {
+    const resp = await fetch(liveArtifactDetailUrl(projectId, artifactId));
+    if (!resp.ok) return null;
+    const json = (await resp.json()) as {
+      artifact?: LiveArtifact;
+      liveArtifact?: LiveArtifact;
+    };
+    return json.liveArtifact ?? json.artifact ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface LiveArtifactRefreshResult {
+  artifact: LiveArtifact;
+  refresh: {
+    id: string;
+    status: 'succeeded';
+    refreshedSourceCount: number;
+  };
+}
+
+export class LiveArtifactRefreshError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'LiveArtifactRefreshError';
+  }
+}
+
+export async function refreshLiveArtifact(
+  projectId: string,
+  artifactId: string,
+): Promise<LiveArtifactRefreshResult> {
+  let resp: Response;
+  try {
+    resp = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}/refresh?projectId=${encodeURIComponent(projectId)}`,
+      { method: 'POST' },
+    );
+  } catch (error) {
+    throw new LiveArtifactRefreshError(
+      error instanceof Error ? error.message : 'Refresh request failed.',
+      0,
+    );
+  }
+
+  if (!resp.ok) {
+    const errorBody = await readApiErrorBody(resp);
+    throw new LiveArtifactRefreshError(errorBody.message, resp.status, errorBody.code);
+  }
+
+  return (await resp.json()) as LiveArtifactRefreshResult;
+}
+
+export async function fetchLiveArtifactRefreshes(
+  projectId: string,
+  artifactId: string,
+): Promise<LiveArtifactRefreshLogEntry[]> {
+  try {
+    const resp = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}/refreshes?projectId=${encodeURIComponent(projectId)}`,
+    );
+    if (!resp.ok) return [];
+    const json = (await resp.json()) as { refreshes?: LiveArtifactRefreshLogEntry[] };
+    return json.refreshes ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function updateLiveArtifact(
+  projectId: string,
+  artifactId: string,
+  input: Pick<LiveArtifact, 'title' | 'status' | 'pinned' | 'preview'> & {
+    slug?: string;
+    document?: LiveArtifact['document'];
+  },
+): Promise<LiveArtifact> {
+  let resp: Response;
+  try {
+    resp = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}?projectId=${encodeURIComponent(projectId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+  } catch (error) {
+    throw new LiveArtifactRefreshError(
+      error instanceof Error ? error.message : 'Update request failed.',
+      0,
+    );
+  }
+
+  if (!resp.ok) {
+    const errorBody = await readApiErrorBody(resp);
+    throw new LiveArtifactRefreshError(errorBody.message, resp.status, errorBody.code);
+  }
+
+  const json = (await resp.json()) as { artifact?: LiveArtifact; liveArtifact?: LiveArtifact };
+  const artifact = json.liveArtifact ?? json.artifact;
+  if (!artifact) throw new LiveArtifactRefreshError('Update response did not include a live artifact.', resp.status);
+  return artifact;
+}
+
+export async function deleteLiveArtifact(projectId: string, artifactId: string): Promise<boolean> {
+  try {
+    const resp = await fetch(
+      `/api/live-artifacts/${encodeURIComponent(artifactId)}?projectId=${encodeURIComponent(projectId)}`,
+      { method: 'DELETE' },
+    );
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function readApiErrorBody(resp: Response): Promise<{ message: string; code?: string }> {
+  try {
+    const json = (await resp.json()) as { error?: { code?: string; message?: string }; message?: string };
+    const message = json.error?.message ?? json.message;
+    return {
+      message: typeof message === 'string' && message.length > 0 ? message : `Request failed (${resp.status}).`,
+      ...(typeof json.error?.code === 'string' ? { code: json.error.code } : {}),
+    };
+  } catch {
+    return { message: `Request failed (${resp.status}).` };
+  }
+}
+
+export function liveArtifactDetailUrl(projectId: string, artifactId: string): string {
+  return `/api/live-artifacts/${encodeURIComponent(artifactId)}?projectId=${encodeURIComponent(projectId)}`;
+}
+
+export type LiveArtifactPreviewVariant = 'rendered' | 'template' | 'rendered-source';
+
+export function liveArtifactPreviewUrl(projectId: string, artifactId: string, variant: LiveArtifactPreviewVariant = 'rendered'): string {
+  const variantQuery = variant === 'rendered' ? '' : `&variant=${encodeURIComponent(variant)}`;
+  return `/api/live-artifacts/${encodeURIComponent(artifactId)}/preview?projectId=${encodeURIComponent(projectId)}${variantQuery}`;
+}
+
+export async function fetchLiveArtifactCode(
+  projectId: string,
+  artifactId: string,
+  variant: Exclude<LiveArtifactPreviewVariant, 'rendered'>,
+): Promise<string | null> {
+  try {
+    const resp = await fetch(liveArtifactPreviewUrl(projectId, artifactId, variant), { cache: 'no-store' });
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch {
+    return null;
   }
 }
 
@@ -621,6 +958,17 @@ export async function deleteProjectFile(
     return resp.ok;
   } catch {
     return false;
+  }
+}
+
+export async function openFolderDialog(): Promise<string | null> {
+  try {
+    const resp = await fetch('/api/dialog/open-folder', { method: 'POST' });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return typeof data.path === 'string' && data.path.length > 0 ? data.path : null;
+  } catch {
+    return null;
   }
 }
 

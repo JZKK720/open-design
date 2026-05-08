@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { BrowserWindow } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 const PENDING_POLL_MS = 120;
 const RUNNING_POLL_MS = 2000;
@@ -59,6 +60,7 @@ export type DesktopRuntime = {
   console(): DesktopConsoleResult;
   eval(input: DesktopEvalInput): Promise<DesktopEvalResult>;
   screenshot(input: DesktopScreenshotInput): Promise<DesktopScreenshotResult>;
+  show(): void;
   status(): DesktopStatusSnapshot;
 };
 
@@ -94,6 +96,21 @@ const MAC_WINDOW_CHROME_CSS = `
   }
   .app-chrome-drag {
     -webkit-app-region: drag;
+  }
+  .entry-brand,
+  .entry-header {
+    -webkit-app-region: drag;
+  }
+  .entry-brand button,
+  .entry-brand [role="button"],
+  .entry-header button,
+  .entry-header [role="button"],
+  .entry-tabs,
+  .entry-tabs *,
+  .entry-side-resizer,
+  .avatar-popover,
+  .avatar-popover * {
+    -webkit-app-region: no-drag;
   }
 `;
 
@@ -155,6 +172,15 @@ async function applyWindowChromeCss(window: BrowserWindow): Promise<void> {
   await window.webContents.insertCSS(MAC_WINDOW_CHROME_CSS, { cssOrigin: "user" });
 }
 
+function isHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function installWindowChromeCssHook(window: BrowserWindow): void {
   window.webContents.on("did-finish-load", () => {
     void applyWindowChromeCss(window).catch((error: unknown) => {
@@ -205,6 +231,19 @@ function attachDownloadSaveAsDialog(window: BrowserWindow): void {
 }
 
 export async function createDesktopRuntime(options: DesktopRuntimeOptions): Promise<DesktopRuntime> {
+  const preloadPath = join(dirname(fileURLToPath(import.meta.url)), "preload.cjs");
+
+  // ipcMain.handle() registers a handler in an internal map that is *not*
+  // surfaced via eventNames(); the previous `!eventNames().includes(...)`
+  // check was therefore always true and would throw "Attempted to register
+  // a second handler" on the second createDesktopRuntime() call (e.g. dev
+  // hot-reload). removeHandler is a no-op when nothing is registered.
+  ipcMain.removeHandler("dialog:pick-folder");
+  ipcMain.handle("dialog:pick-folder", async () => {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
   const consoleEntries: DesktopConsoleEntry[] = [];
   const window = new BrowserWindow({
     height: 900,
@@ -215,6 +254,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: preloadPath,
     },
     width: 1280,
   });
@@ -227,6 +267,29 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
 
   window.on("focus", () => showWindowButtons(window));
   window.on("blur", () => showWindowButtons(window));
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpUrl(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  window.webContents.on("will-navigate", (event, url) => {
+    if (!isHttpUrl(url) || url === currentUrl) return;
+    const currentOrigin = currentUrl ? new URL(currentUrl).origin : null;
+    const nextOrigin = new URL(url).origin;
+    if (currentOrigin === nextOrigin) return;
+    event.preventDefault();
+    void shell.openExternal(url);
+  });
+
+  if (process.platform === "darwin") {
+    window.on("close", (event) => {
+      if (!stopped) {
+        event.preventDefault();
+        window.hide();
+      }
+    });
+  }
 
   (window.webContents as any).on("console-message", (event: { level?: number | string; message?: string }) => {
     const level = typeof event.level === "number" ? mapConsoleLevel(event.level) : (event.level ?? "log");
@@ -311,6 +374,12 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       await mkdir(dirname(outputPath), { recursive: true });
       await writeFile(outputPath, image.toPNG());
       return { path: outputPath };
+    },
+    show() {
+      if (!window.isDestroyed()) {
+        window.show();
+        window.focus();
+      }
     },
     status() {
       return {

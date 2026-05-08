@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { EntryView } from './components/EntryView';
 import type { CreateInput } from './components/NewProjectPanel';
 import { PetOverlay } from './components/pet/PetOverlay';
@@ -21,20 +21,25 @@ import {
   fetchDaemonConfig,
   DEFAULT_PET,
   hasAnyConfiguredProvider,
+  fetchComposioConfigFromDaemon,
   loadConfig,
   mergeDaemonConfig,
   saveConfig,
+  syncComposioConfigToDaemon,
   syncConfigToDaemon,
   syncMediaProvidersToDaemon,
 } from './state/config';
+import { applyAppearanceToDocument } from './state/appearance';
 import {
   createProject,
   deleteProject as deleteProjectApi,
   importClaudeDesignZip,
+  importFolderProject,
   listProjects,
   listTemplates,
   patchProject,
 } from './state/projects';
+import { liveArtifactTabId } from './types';
 import type {
   AgentInfo,
   AppConfig,
@@ -46,13 +51,24 @@ import type {
   SkillSummary,
 } from './types';
 
+function normalizeSavedComposioConfig(config: AppConfig['composio']): AppConfig['composio'] {
+  const apiKey = config?.apiKey?.trim() ?? '';
+  if (apiKey) {
+    return {
+      ...config,
+      apiKey: '',
+      apiKeyConfigured: true,
+      apiKeyTail: apiKey.slice(-4),
+    };
+  }
+  return { ...(config ?? {}) };
+}
+
 export function App() {
   const [config, setConfig] = useState<AppConfig>(() => loadConfig());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<
-    SettingsSection | undefined
-  >(undefined);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
   const [daemonLive, setDaemonLive] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -76,13 +92,31 @@ export function App() {
   // live theme switch in Settings applies atomically — no 1-frame flash of
   // the old theme. Safe here because the component tree is ssr:false.
   useLayoutEffect(() => {
-    const theme = config.theme ?? 'system';
-    if (theme === 'system') {
-      document.documentElement.removeAttribute('data-theme');
-    } else {
-      document.documentElement.setAttribute('data-theme', theme);
-    }
-  }, [config.theme]);
+    applyAppearanceToDocument({
+      theme: config.theme ?? 'system',
+      accentColor: config.accentColor,
+    });
+  }, [config.theme, config.accentColor]);
+
+  // Tell the daemon what the user is currently looking at, so the MCP
+  // server can surface it as `get_active_context` to a coding agent in
+  // another repo. Best-effort fire-and-forget; the daemon holds it in
+  // memory with a short TTL and the MCP layer falls back to
+  // {active:false} if this hasn't run.
+  const activeProjectId = route.kind === 'project' ? route.projectId : null;
+  const activeFileName = route.kind === 'project' ? route.fileName : null;
+  useEffect(() => {
+    const body = activeProjectId
+      ? { projectId: activeProjectId, fileName: activeFileName }
+      : { active: false };
+    fetch('/api/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => {
+      // Daemon down or transient network — not worth surfacing.
+    });
+  }, [activeProjectId, activeFileName]);
 
   // Bootstrap — detect daemon, load pickers, seed sensible defaults.
   useEffect(() => {
@@ -100,6 +134,7 @@ export function App() {
         promptTemplateList,
         versionInfo,
         daemonConfig,
+        daemonComposioConfig,
       ] = await Promise.all([
         alive ? fetchAgents() : Promise.resolve([] as AgentInfo[]),
         alive ? fetchSkills() : Promise.resolve([] as SkillSummary[]),
@@ -113,6 +148,7 @@ export function App() {
           : Promise.resolve([] as PromptTemplateSummary[]),
         alive ? fetchAppVersionInfo() : Promise.resolve(null),
         alive ? fetchDaemonConfig() : Promise.resolve(null),
+        alive ? fetchComposioConfigFromDaemon() : Promise.resolve(null),
       ]);
       if (cancelled) return;
       setAgents(agentList);
@@ -124,9 +160,15 @@ export function App() {
       setAppVersionInfo(versionInfo);
 
       setConfig((prev) => {
+        // Merge daemon-persisted config — daemon values win for the fields
+        // it tracks so that the choice survives origin/storage resets.
         const next = mergeDaemonConfig(prev, daemonConfig);
 
         if (alive) {
+          const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
+          if (!hasLocalComposioKey && daemonComposioConfig) {
+            next.composio = daemonComposioConfig;
+          }
           if (!next.agentId) {
             const firstAvailable = agentList.find((a) => a.available);
             if (firstAvailable) next.agentId = firstAvailable.id;
@@ -135,8 +177,6 @@ export function App() {
             next.designSystemId =
               dsList.find((d) => d.id === 'default')?.id ?? dsList[0]!.id;
           }
-        } else {
-          next.mode = 'api';
         }
         saveConfig(next);
         if (alive && hasAnyConfiguredProvider(next.mediaProviders)) {
@@ -147,6 +187,7 @@ export function App() {
         // writing back is idempotent and ensures both sides stay in sync.
         if (alive) {
           void syncConfigToDaemon(next);
+          void syncComposioConfigToDaemon(next.composio);
         }
 
         // Pop the onboarding modal only on the first run. Once the user has
@@ -203,19 +244,30 @@ export function App() {
     setTemplates(list);
   }, []);
 
-  const handleConfigSave = useCallback((next: AppConfig) => {
-    // Saving from any settings dialog (welcome or regular) counts as
-    // having completed onboarding — the user has actively chosen a
-    // configuration, so future page loads can skip the auto-popup.
-    const withOnboarding: AppConfig = { ...next, onboardingCompleted: true };
+  const handleConfigSave = useCallback(async (next: AppConfig, closeModal: boolean = true) => {
+    // Only sync Composio key to the daemon when it actually changed,
+    // so unrelated saves (theme, model, etc.) are never blocked.
+    const composioChanged =
+      next.composio?.apiKey !== config.composio?.apiKey ||
+      next.composio?.apiKeyConfigured !== config.composio?.apiKeyConfigured;
+    if (composioChanged) {
+      const ok = await syncComposioConfigToDaemon(next.composio);
+      if (!ok) return { success: false };
+    }
+    const withOnboarding: AppConfig = {
+      ...next,
+      composio: normalizeSavedComposioConfig(next.composio),
+      onboardingCompleted: true,
+    };
     saveConfig(withOnboarding);
     void syncMediaProvidersToDaemon(withOnboarding.mediaProviders, {
       force: true,
     });
     void syncConfigToDaemon(withOnboarding);
     setConfig(withOnboarding);
-    setSettingsOpen(false);
-  }, []);
+    if (closeModal) setSettingsOpen(false);
+    return { success: true };
+  }, [config]);
 
   const handleModeChange = useCallback(
     (mode: AppConfig['mode']) => {
@@ -262,10 +314,20 @@ export function App() {
     [config],
   );
 
-  const refreshAgents = useCallback(async () => {
-    const next = await fetchAgents();
-    setAgents(next);
-  }, []);
+  const refreshAgents = useCallback(
+    async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
+      if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
+        const nextConfig = { ...config, agentCliEnv: options.agentCliEnv ?? {} };
+        saveConfig(nextConfig);
+        await syncConfigToDaemon(nextConfig);
+        setConfig(nextConfig);
+      }
+      const next = await fetchAgents({ throwOnError: options?.throwOnError });
+      setAgents(next);
+      return next;
+    },
+    [config],
+  );
 
   const handleCreateProject = useCallback(
     async (input: CreateInput & { pendingPrompt?: string }) => {
@@ -308,21 +370,33 @@ export function App() {
     });
   }, []);
 
+  const handleImportFolder = useCallback(async (baseDir: string) => {
+    const result = await importFolderProject({ baseDir });
+    if (!result) return;
+    setProjects((curr) => [result.project, ...curr.filter((p) => p.id !== result.project.id)]);
+    navigate({
+      kind: 'project',
+      projectId: result.project.id,
+      fileName: result.entryFile,
+    });
+  }, []);
+
   const handleOpenProject = useCallback((id: string) => {
     navigate({ kind: 'project', projectId: id, fileName: null });
   }, []);
 
-  const handleDeleteProject = useCallback(
-    async (id: string) => {
-      const ok = await deleteProjectApi(id);
-      if (!ok) return;
-      setProjects((curr) => curr.filter((p) => p.id !== id));
-      if (route.kind === 'project' && route.projectId === id) {
-        navigate({ kind: 'home' });
-      }
-    },
-    [route],
-  );
+  const handleOpenLiveArtifact = useCallback((projectId: string, artifactId: string) => {
+    navigate({ kind: 'project', projectId, fileName: liveArtifactTabId(artifactId) });
+  }, []);
+
+  const handleDeleteProject = useCallback(async (id: string) => {
+    const ok = await deleteProjectApi(id);
+    if (!ok) return;
+    setProjects((curr) => curr.filter((p) => p.id !== id));
+    if (route.kind === 'project' && route.projectId === id) {
+      navigate({ kind: 'home' });
+    }
+  }, [route]);
 
   const handleBack = useCallback(() => {
     navigate({ kind: 'home' });
@@ -380,15 +454,15 @@ export function App() {
     };
   }, [route, activeProject, projects, daemonLive]);
 
-  const openSettings = useCallback(() => {
+  const openSettings = useCallback((section: SettingsSection = 'execution') => {
     setSettingsWelcome(false);
-    setSettingsSection(undefined);
+    setSettingsInitialSection(section);
     setSettingsOpen(true);
   }, []);
 
   const openPetSettings = useCallback(() => {
     setSettingsWelcome(false);
-    setSettingsSection('pet');
+    setSettingsInitialSection('pet');
     setSettingsOpen(true);
   }, []);
 
@@ -447,6 +521,18 @@ export function App() {
     void refreshTemplates();
   }, [route.kind, refreshTemplates]);
 
+  const enabledSkills = useMemo(
+    () => skills.filter((s) => !(config.disabledSkills ?? []).includes(s.id)),
+    [skills, config.disabledSkills],
+  );
+  const enabledDS = useMemo(
+    () =>
+      designSystems.filter(
+        (d) => !(config.disabledDesignSystems ?? []).includes(d.id),
+      ),
+    [designSystems, config.disabledDesignSystems],
+  );
+
   return (
     <>
       {activeProject ? (
@@ -475,8 +561,8 @@ export function App() {
         />
       ) : (
         <EntryView
-          skills={skills}
-          designSystems={designSystems}
+          skills={enabledSkills}
+          designSystems={enabledDS}
           projects={projects}
           templates={templates}
           promptTemplates={promptTemplates}
@@ -486,7 +572,9 @@ export function App() {
           loading={bootstrapping}
           onCreateProject={handleCreateProject}
           onImportClaudeDesign={handleImportClaudeDesign}
+          onImportFolder={handleImportFolder}
           onOpenProject={handleOpenProject}
+          onOpenLiveArtifact={handleOpenLiveArtifact}
           onDeleteProject={handleDeleteProject}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
           onOpenSettings={openSettings}
@@ -507,7 +595,7 @@ export function App() {
           daemonLive={daemonLive}
           appVersionInfo={appVersionInfo}
           welcome={settingsWelcome}
-          defaultSection={settingsSection}
+          initialSection={settingsInitialSection}
           onSave={handleConfigSave}
           onClose={() => {
             // Dismissing the welcome modal (Skip for now / backdrop click)
