@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    # Skip docs and repo-guidance-only pushes; shipped app content such as
+    # skills, design systems, craft, and runtime source still publishes latest.
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.github/instructions/**'
+      - '.github/skills/**'
   workflow_dispatch:
 
 permissions:
