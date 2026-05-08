@@ -17,6 +17,10 @@ For named Docker releases with versioned GHCR tags and GitHub release notes, use
 
 - `.github/workflows/release-docker.yml`
 
+Prepared brief for the next named fork Docker release:
+
+- `docs/cubecloud-fork-release-0.3.0.md`
+
 That workflow is manual on purpose. It lets you enter a release version such as `0.2.1`, optionally add release notes, publish semver-tagged Docker images, and create a GitHub release named `Open Design Docker <version>`.
 
 Docker release outputs use these conventions:
