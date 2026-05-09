@@ -1,5 +1,5 @@
 ---
-description: "Use when syncing the CubeCloud fork with upstream Open Design, checking whether fork/main can absorb upstream commits, preserving CubeCloud branding or local env or data overlays, republishing fork GHCR latest or versioned Docker releases, or planning downstream pull or update smoke tests."
+description: "Use when syncing the CubeCloud fork with upstream Open Design, planning the next upstream version bump, deciding between fork latest and pinned Docker release lanes, checking whether fork/main can absorb upstream commits, preserving CubeCloud branding or local env or data overlays, republishing fork GHCR latest or versioned Docker releases, or planning downstream pull or update smoke tests."
 name: "CubeCloud Fork Sync Guidance"
 applyTo:
   - "compose.yaml"
@@ -20,6 +20,14 @@ applyTo:
 # CubeCloud Fork Sync Guidance
 
 - Start by verifying live branch state. `docs/cubecloud-upstream-sync-0.4.0.md` is a seam and conflict snapshot, not a standing ahead or behind count.
+- Current release-lane split:
+  - fork GHCR `latest` is the rolling update lane for future fork syncs and checked-out repo updates
+  - `ghcr.io/jzkk720/open-design-{daemon,web}:0.3.0` is the current pinned Docker release snapshot for the validated upstream integration at `02b6486`
+  - do not assume `latest` and `0.3.0` resolve to the same revision after later fork-only workflow or policy commits
+- Current GHCR publish gate:
+  - `.github/workflows/publish-ghcr.yml` ignores docs-only and repo-guidance-only pushes under `*.md`, `docs/**`, `.github/instructions/**`, and `.github/skills/**`
+  - publish-relevant pushes to `fork/main` still refresh fork `latest`, branch, and `sha-*` tags
+  - workflow-file changes are still publish-relevant and can legitimately move `latest`
 - Separate these questions before proposing work:
   - can `fork/main` absorb a selected upstream fix batch with owner-reviewed cherry-picks
   - can the fork survive a broader merge or rebase event without dropping CubeCloud runtime behavior
@@ -27,6 +35,7 @@ applyTo:
 - Default policy remains cherry-pick first:
   - keep `fork/main` authoritative for CubeCloud runtime and deployment behavior
   - use owner-reviewed cherry-picks from `upstream/main` as the normal sync lane
+  - for the next upstream version bump, keep `latest` as the rolling lane and cut a new semver Docker release only when the user wants a new pinned snapshot
   - only recommend merge or rebase when the owner explicitly asks for a broader refresh and accepts conflict resolution plus GHCR republish
 - Preserve these fork overlay surfaces unless the user explicitly retires them:
   - branding assets and pack icons
@@ -52,6 +61,7 @@ applyTo:
 - Reuse existing references instead of restating procedures:
   - `AGENTS.md`
   - `docs/cubecloud-openspace-installation.md`
+  - `docs/cubecloud-fork-release-0.3.0.md`
   - `docs/cubecloud-upstream-sync-0.4.0.md`
   - `.github/instructions/ghcr-distribution.instructions.md`
   - `.github/instructions/open-design-container-runtime-diagnostics.instructions.md`

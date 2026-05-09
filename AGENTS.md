@@ -6,10 +6,11 @@ This file is the single source of truth for agents entering this repository. Rea
 
 - Product and onboarding: `README.md`, `README.zh-CN.md`, `QUICKSTART.md`.
 - Contribution and environment: `CONTRIBUTING.md`, `CONTRIBUTING.zh-CN.md`.
-- Containerized fork distribution: `docs/cubecloud-openspace-installation.md`.
+- Containerized fork distribution: `docs/cubecloud-openspace-installation.md`, `docs/cubecloud-fork-release-0.3.0.md`, `docs/cubecloud-upstream-sync-0.4.0.md`.
 - Architecture and protocols: `docs/spec.md`, `docs/architecture.md`, `docs/skills-protocol.md`, `docs/agent-adapters.md`, `docs/modes.md`.
-- Roadmap and references: `docs/roadmap.md`, `docs/references.md`, `specs/current/maintainability-roadmap.md`.
+- Roadmap and references: `docs/roadmap.md`, `docs/references.md`, `docs/code-review-guidelines.md`, `specs/current/maintainability-roadmap.md`.
 - Directory-level agent guidance: `apps/AGENTS.md`, `packages/AGENTS.md`, `tools/AGENTS.md`, `e2e/AGENTS.md`.
+- Workspace customization guidance: `.github/instructions/cubecloud-fork-sync.instructions.md`, `.github/instructions/ghcr-distribution.instructions.md`, `.github/instructions/open-design-container-runtime-diagnostics.instructions.md`.
 
 ## Workspace directories
 
@@ -71,6 +72,15 @@ This file is the single source of truth for agents entering this repository. Rea
 
 - Git commits must not include `Co-authored-by` trailers or any other co-author metadata.
 
+## Code review guide
+
+- Use `docs/code-review-guidelines.md` as the repository-wide review standard. That document is the operational guide; this `AGENTS.md` is the source of truth when the two disagree.
+- Walk reviews top-down through `docs/code-review-guidelines.md`: Product relevance test → forbidden surfaces → ownership/scope → matching lane → checklist → comments → approval bar.
+- Pick the matching review lane: default code/tests, contract and protocol changes, design-system additions, skill additions, or craft additions.
+- Before reviewing changes under `apps/`, `packages/`, `tools/`, or `e2e/`, read that directory's `AGENTS.md` and apply its local boundaries.
+- Blocking review feedback should focus on correctness, security/secrets, data integrity, repository boundary violations, contract/migration breakage, missing required validation, or high-risk maintainability issues.
+- Only maintainers may close a PR instead of requesting changes, and only when the change is not salvageable on the existing branch (wrong target product, foreign test harness, DOM/API assumptions absent from this repo, or scripts that conflict with lifecycle rules).
+
 ## Validation strategy
 
 - After package, workspace, or command-entry changes, run `pnpm install` so workspace links and generated dist entries stay fresh.
@@ -98,6 +108,7 @@ Use this sequence when adapting Open Design build flows for another app or produ
 	- If CubeCloud customizations on `fork/main` affect the runtime images, treat the fork GHCR publish lane as the deployment source of truth.
 	- The default `compose.yaml` runtime should follow the fork GHCR `latest` tag unless the operator explicitly asks to rebuild from local source.
 	- Local repo changes and validated `fork/main` updates should refresh the fork GHCR `latest` tags first; downstream machines should only need `docker compose pull` plus `up -d` to take effect.
+	- Docs-only and repo-guidance-only pushes should not move fork GHCR `latest`; `publish-ghcr` is gated for `*.md`, `docs/**`, `.github/instructions/**`, and `.github/skills/**`.
 	- A successful local source build does not prove the pulled GHCR images contain the same changes.
 	- Workflow presence proves the repo is configured to publish images, not that a fork package already exists or is the deployed source of truth.
 3. Run the narrowest validating command first (package-scoped `pnpm --filter ... typecheck|test|build`), then run workspace gates (`pnpm typecheck`, `pnpm test`, and `pnpm build` when build surfaces changed).

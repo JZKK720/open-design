@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { en } from '../../src/i18n/locales/en';
 
 const {
   playSoundMock,
@@ -14,6 +15,7 @@ const {
   fetchDesignSystemsMock,
   fetchSkillMock,
   fetchDesignSystemMock,
+  fetchProviderModelsMock,
 } = vi.hoisted(() => ({
   playSoundMock: vi.fn(),
   requestNotificationPermissionMock: vi.fn(),
@@ -25,6 +27,7 @@ const {
   fetchDesignSystemsMock: vi.fn(),
   fetchSkillMock: vi.fn(),
   fetchDesignSystemMock: vi.fn(),
+  fetchProviderModelsMock: vi.fn(),
 }));
 
 vi.mock('../../src/utils/notifications', async () => {
@@ -55,6 +58,10 @@ vi.mock('../../src/providers/registry', async () => {
     codexPetSpritesheetUrl: (pet: { spritesheetUrl: string }) => pet.spritesheetUrl,
   };
 });
+
+vi.mock('../../src/providers/provider-models', () => ({
+  fetchProviderModels: fetchProviderModelsMock,
+}));
 
 import { SettingsDialog } from '../../src/components/SettingsDialog';
 import type { SettingsSection } from '../../src/components/SettingsDialog';
@@ -182,7 +189,8 @@ function renderSettingsDialog(
     appVersionInfo?: AppVersionInfo | null;
   } = {},
 ) {
-  const onSave = vi.fn();
+  const onPersist = vi.fn();
+  const onPersistComposioKey = vi.fn();
   const onClose = vi.fn();
   const onRefreshAgents = options.onRefreshAgents ?? vi.fn();
 
@@ -193,17 +201,18 @@ function renderSettingsDialog(
       daemonLive={options.daemonLive ?? true}
       appVersionInfo={options.appVersionInfo ?? null}
       initialSection={options.initialSection ?? 'execution'}
-      onSave={onSave}
+      onPersist={onPersist}
+      onPersistComposioKey={onPersistComposioKey}
       onClose={onClose}
       onRefreshAgents={onRefreshAgents}
     />,
   );
 
-  return { onSave, onClose, onRefreshAgents, ...view };
+  return { onPersist, onPersistComposioKey, onClose, onRefreshAgents, ...view };
 }
 
 function renderLanguageSettingsDialog(initialLocale: Parameters<typeof I18nProvider>[0]['initial'] = 'en') {
-  const onSave = vi.fn();
+  const onPersist = vi.fn();
   const onClose = vi.fn();
 
   render(
@@ -214,14 +223,28 @@ function renderLanguageSettingsDialog(initialLocale: Parameters<typeof I18nProvi
         daemonLive={true}
         appVersionInfo={null}
         initialSection="language"
-        onSave={onSave}
+        onPersist={onPersist}
+        onPersistComposioKey={vi.fn()}
         onClose={onClose}
         onRefreshAgents={vi.fn()}
       />
     </I18nProvider>,
   );
 
-  return { onSave, onClose };
+  return { onPersist, onClose };
+}
+
+async function waitForPersist(
+  onPersist: ReturnType<typeof vi.fn>,
+  expectedConfig: unknown,
+  expectedOptions: { forceMediaProviderSync?: boolean } = { forceMediaProviderSync: false },
+) {
+  await waitFor(() => {
+    expect(onPersist).toHaveBeenCalledWith(
+      expectedConfig,
+      expect.objectContaining(expectedOptions),
+    );
+  });
 }
 
 function deferred<T>() {
@@ -245,6 +268,7 @@ beforeEach(() => {
   fetchDesignSystemsMock.mockReset();
   fetchSkillMock.mockReset();
   fetchDesignSystemMock.mockReset();
+  fetchProviderModelsMock.mockReset();
   notificationPermissionMock.mockReturnValue('default');
   requestNotificationPermissionMock.mockResolvedValue('granted');
   showCompletionNotificationMock.mockResolvedValue('shown');
@@ -270,6 +294,12 @@ beforeEach(() => {
     id,
     body: `design system body for ${id}`,
   }));
+  fetchProviderModelsMock.mockResolvedValue({
+    ok: true,
+    kind: 'success',
+    latencyMs: 1,
+    models: [],
+  });
 });
 
 describe('SettingsDialog execution settings BYOK interactions', () => {
@@ -346,22 +376,18 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('openai-key');
   });
 
-  it('enables Save only when BYOK required fields are valid and saves the edited config', () => {
-    const { onSave } = renderSettingsDialog();
+  it('autosaves BYOK edits once required fields are valid', async () => {
+    const { onPersist } = renderSettingsDialog();
 
-    const saveButton = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
     const baseUrlInput = screen.getByLabelText('Base URL') as HTMLInputElement;
-    expect(saveButton.disabled).toBe(true);
 
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'sk-test' },
     });
-    expect(saveButton.disabled).toBe(false);
 
     fireEvent.change(baseUrlInput, {
       target: { value: 'http://10.0.0.5:11434/v1' },
     });
-    expect(saveButton.disabled).toBe(true);
     expect(screen.getByRole('alert').textContent).toContain(
       'Enter a valid public http:// or https:// URL.',
     );
@@ -369,11 +395,9 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     fireEvent.change(baseUrlInput, {
       target: { value: 'http://localhost:11434/v1' },
     });
-    expect(saveButton.disabled).toBe(false);
 
-    fireEvent.click(saveButton);
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mode: 'api',
         apiProtocol: 'anthropic',
@@ -382,18 +406,17 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
         model: 'claude-sonnet-4-5',
         apiProviderBaseUrl: null,
       }),
-      true,
+      {},
     );
   });
 
-  it('does not save BYOK edits when cancel is used or the backdrop is clicked', () => {
+  it('closes BYOK via the close button or backdrop', () => {
     const first = renderSettingsDialog();
 
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'sk-unsaved' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Cancel|Abbrechen/i }));
-    expect(first.onSave).not.toHaveBeenCalled();
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -403,12 +426,11 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       target: { value: 'sk-unsaved-2' },
     });
     fireEvent.click(document.querySelector('.modal-backdrop') as HTMLElement);
-    expect(second.onSave).not.toHaveBeenCalled();
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows Azure-specific fields and saves an Azure config', () => {
-    const { onSave } = renderSettingsDialog();
+  it('shows Azure-specific fields and autosaves an Azure config', async () => {
+    const { onPersist } = renderSettingsDialog();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Azure OpenAI' }));
 
@@ -432,8 +454,8 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       target: { value: '2024-10-21' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mode: 'api',
         apiProtocol: 'azure',
@@ -443,12 +465,12 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
         apiVersion: '2024-10-21',
         apiProviderBaseUrl: null,
       }),
-      true,
+      {},
     );
   });
 
-  it('supports custom model entry in BYOK mode', () => {
-    const { onSave } = renderSettingsDialog({ apiProtocol: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiProviderBaseUrl: 'https://api.openai.com/v1' });
+  it('supports custom model entry in BYOK mode', async () => {
+    const { onPersist } = renderSettingsDialog({ apiProtocol: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiProviderBaseUrl: 'https://api.openai.com/v1' });
 
     fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
     fireEvent.change(screen.getByLabelText('API key'), {
@@ -464,16 +486,137 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       target: { value: 'gpt-4.1-custom' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         apiProtocol: 'openai',
         apiKey: 'sk-openai',
         model: 'gpt-4.1-custom',
         baseUrl: 'https://api.openai.com/v1',
       }),
-      true,
+      {},
     );
+  });
+
+  it('enables model fetching only for supported BYOK provider drafts', () => {
+    renderSettingsDialog({ apiProtocol: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiProviderBaseUrl: 'https://api.openai.com/v1' });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    const fetchButton = screen.getByRole('button', { name: 'Fetch models' }) as HTMLButtonElement;
+    expect(fetchButton.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'sk-openai' },
+    });
+    expect(fetchButton.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Azure OpenAI' }));
+    expect((screen.getByRole('button', { name: 'Fetch models' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Automatic deployment discovery is not available/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
+    fireEvent.change(screen.getByLabelText('API key'), {
+      target: { value: 'ollama-key' },
+    });
+    expect((screen.getByRole('button', { name: 'Fetch models' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Model discovery is not available for this protocol.')).toBeTruthy();
+  });
+
+  it('fetches provider models, merges them into the picker, and preserves a custom current model', async () => {
+    fetchProviderModelsMock.mockResolvedValueOnce({
+      ok: true,
+      kind: 'success',
+      latencyMs: 12,
+      models: [
+        { id: 'remote-alpha', label: 'Remote Alpha' },
+        { id: 'gpt-4o', label: 'gpt-4o' },
+      ],
+    });
+    renderSettingsDialog({
+      apiProtocol: 'openai',
+      apiKey: 'sk-openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'custom-still-here',
+      apiProviderBaseUrl: 'https://api.openai.com/v1',
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    expect((screen.getByLabelText('Custom model id') as HTMLInputElement).value).toBe('custom-still-here');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch models' }));
+
+    expect(await screen.findByText('Fetched 2 models.')).toBeTruthy();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        protocol: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-openai',
+      }),
+      expect.any(AbortSignal),
+    );
+    const select = screen.getByLabelText('Model') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(
+      expect.arrayContaining(['remote-alpha', 'gpt-4o', '__custom__']),
+    );
+    expect(
+      Array.from(select.options).some((o) =>
+        o.textContent === 'Remote Alpha (remote-alpha)',
+      ),
+    ).toBe(true);
+    expect((screen.getByLabelText('Custom model id') as HTMLInputElement).value).toBe('custom-still-here');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch models' }));
+    expect(fetchProviderModelsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears stale fetched-model status when provider fields change', async () => {
+    fetchProviderModelsMock.mockResolvedValueOnce({
+      ok: true,
+      kind: 'success',
+      latencyMs: 12,
+      models: [{ id: 'remote-alpha', label: 'Remote Alpha' }],
+    });
+    renderSettingsDialog({
+      apiProtocol: 'openai',
+      apiKey: 'sk-openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      apiProviderBaseUrl: 'https://api.openai.com/v1',
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch models' }));
+    expect(await screen.findByText('Fetched 1 models.')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Fetched 1 models.')).toBeNull();
+    });
+  });
+
+  it('renders provider model fetch failures inline', async () => {
+    fetchProviderModelsMock.mockResolvedValueOnce({
+      ok: false,
+      kind: 'auth_failed',
+      latencyMs: 12,
+      status: 401,
+      detail: 'bad key',
+    });
+    renderSettingsDialog({
+      apiProtocol: 'openai',
+      apiKey: 'sk-openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      apiProviderBaseUrl: 'https://api.openai.com/v1',
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch models' }));
+
+    expect(await screen.findByText('Authentication failed. Check your API key.')).toBeTruthy();
   });
 });
 
@@ -482,7 +625,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     cleanup();
   });
 
-  it('lets users switch to Local CLI, select an installed agent, and save', () => {
+  it('lets users switch to Local CLI, select an installed agent, and autosave', async () => {
     const installed = availableAgents[0]!;
     const unavailable: AgentInfo = {
       id: 'gemini',
@@ -491,8 +634,10 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
       available: false,
       version: null,
       models: [],
+      installUrl: 'https://github.com/google-gemini/gemini-cli',
+      docsUrl: 'https://github.com/google-gemini/gemini-cli/blob/main/README.md',
     };
-    const { onSave } = renderSettingsDialog(
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: null },
       { agents: [installed, unavailable] },
     );
@@ -500,23 +645,29 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     const localCliTab = screen.getByRole('tab', { name: /Local CLI.*1 installed/i });
     fireEvent.click(localCliTab);
 
-    const saveButton = screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
-    expect(saveButton.disabled).toBe(true);
-
     const codexCard = screen.getByRole('button', { name: /Codex CLI/i }) as HTMLButtonElement;
-    const geminiCard = screen.getByRole('button', { name: /Gemini CLI/i }) as HTMLButtonElement;
-    expect(geminiCard.disabled).toBe(true);
+    const geminiGroup = screen.getByRole('group', { name: /Gemini CLI/i });
+    expect(
+      (within(geminiGroup).getByRole('link', { name: en['settings.agentInstall.install'] }) as HTMLAnchorElement).getAttribute('href'),
+    ).toBe(
+      'https://github.com/google-gemini/gemini-cli',
+    );
+    expect(
+      screen.getByText(en['settings.agentInstall.stepAuth']),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(en['settings.agentInstall.stepSelect']),
+    ).toBeTruthy();
+    expect(screen.getByText(en['settings.agentInstall.pathHint'])).toBeTruthy();
 
     fireEvent.click(codexCard);
-    expect(saveButton.disabled).toBe(false);
-
-    fireEvent.click(saveButton);
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mode: 'daemon',
         agentId: 'codex',
       }),
-      true,
+      {},
     );
   });
 
@@ -528,7 +679,6 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Local CLI.*0 installed/i }));
     expect(screen.getByText(/No agents detected yet/i)).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('shows rescan loading, avoids duplicate rescans, and renders the success notice', async () => {
@@ -592,23 +742,23 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     });
   });
 
-  it('saves CLI config locations from the execution form', () => {
-    const { onSave } = renderSettingsDialog(
+  it('autosaves CLI config locations from the execution form', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { agents: availableAgents },
     );
 
     fireEvent.click(screen.getByRole('tab', { name: /Local CLI.*1 installed/i }));
 
-    fireEvent.change(screen.getByLabelText('Claude Code config dir'), {
+    fireEvent.change(screen.getByLabelText('Claude Code config directory'), {
       target: { value: '  ~/.claude-qa  ' },
     });
     fireEvent.change(screen.getByLabelText('Codex home'), {
       target: { value: ' ~/.codex-team ' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mode: 'daemon',
         agentId: 'codex',
@@ -617,7 +767,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
           codex: { CODEX_HOME: '~/.codex-team' },
         },
       }),
-      true,
+      {},
     );
   });
 
@@ -672,8 +822,8 @@ describe('SettingsDialog media providers interactions', () => {
     expect(bflBaseUrl.disabled).toBe(true);
   });
 
-  it('clears an existing provider config and removes it from the saved payload', () => {
-    const { onSave } = renderSettingsDialog(
+  it('clears an existing provider config and removes it from the persisted payload', async () => {
+    const { onPersist } = renderSettingsDialog(
       {
         mode: 'daemon',
         agentId: 'codex',
@@ -684,23 +834,61 @@ describe('SettingsDialog media providers interactions', () => {
       { initialSection: 'media' },
     );
 
+    // Issue #737 added a window.confirm guard on the Clear button so a
+    // stray click cannot wipe a saved API key. Auto-accept the prompt
+    // here so the test still exercises the cleared-payload path.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
     const clearButtons = screen.getAllByRole('button', { name: 'Clear' });
     fireEvent.click(clearButtons[0]!);
 
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
     expect((screen.getByLabelText('OpenAI API key') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('OpenAI Base URL') as HTMLInputElement).value).toBe('');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mediaProviders: {},
       }),
-      true,
+      { forceMediaProviderSync: true },
     );
+
+    confirmSpy.mockRestore();
   });
 
-  it('supports saving provider API key and base URL edits', () => {
-    const { onSave } = renderSettingsDialog(
+  it('cancels Clear when the confirmation is dismissed (issue #737)', () => {
+    const { onPersist } = renderSettingsDialog(
+      {
+        mode: 'daemon',
+        agentId: 'codex',
+        mediaProviders: {
+          openai: { apiKey: 'sk-media', baseUrl: 'https://custom.openai.example/v1' },
+        },
+      },
+      { initialSection: 'media' },
+    );
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const clearButtons = screen.getAllByRole('button', { name: 'Clear' });
+    fireEvent.click(clearButtons[0]!);
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // Saved key + base URL must stay intact when the user dismisses
+    // the confirmation; without this guard a fat-fingered click on
+    // Clear would silently wipe the key. Autosave should never fire
+    // because nothing changed.
+    expect((screen.getByLabelText('OpenAI API key') as HTMLInputElement).value).toBe('sk-media');
+    expect((screen.getByLabelText('OpenAI Base URL') as HTMLInputElement).value).toBe(
+      'https://custom.openai.example/v1',
+    );
+    expect(onPersist).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+
+  it('supports persisting provider API key and base URL edits', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'media' },
     );
@@ -712,8 +900,8 @@ describe('SettingsDialog media providers interactions', () => {
       target: { value: 'https://fish.example.com' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mediaProviders: expect.objectContaining({
           fishaudio: {
@@ -723,12 +911,46 @@ describe('SettingsDialog media providers interactions', () => {
           },
         }),
       }),
-      true,
+      { forceMediaProviderSync: true },
     );
   });
 
-  it('supports providers with a custom model override field', () => {
-    const { onSave } = renderSettingsDialog(
+  it('re-masks a replacement media provider API key until reveal is used again', () => {
+    renderSettingsDialog(
+      {
+        mode: 'daemon',
+        agentId: 'codex',
+        mediaProviders: {
+          openai: { apiKey: 'sk-media', baseUrl: 'https://api.openai.com/v1' },
+        },
+      },
+      { initialSection: 'media' },
+    );
+
+    const apiKeyInput = screen.getByLabelText('OpenAI API key') as HTMLInputElement;
+    expect(apiKeyInput.type).toBe('password');
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenAI Show key' }));
+    expect(apiKeyInput.type).toBe('text');
+
+    // Issue #737 added a window.confirm guard on Clear; jsdom's
+    // unimplemented confirm() returns undefined, which would cancel
+    // the clear and leave this test asserting the wrong reveal state.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Clear' })[0]!);
+    expect(apiKeyInput.type).toBe('password');
+
+    fireEvent.change(apiKeyInput, { target: { value: 'sk-replacement' } });
+    expect(apiKeyInput.type).toBe('password');
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenAI Show key' }));
+    expect(apiKeyInput.type).toBe('text');
+
+    confirmSpy.mockRestore();
+  });
+
+  it('supports providers with a custom model override field', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'media' },
     );
@@ -743,8 +965,8 @@ describe('SettingsDialog media providers interactions', () => {
       target: { value: 'gemini-3.1-flash-image-preview' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         mediaProviders: expect.objectContaining({
           nanobanana: {
@@ -754,11 +976,50 @@ describe('SettingsDialog media providers interactions', () => {
           },
         }),
       }),
-      true,
+      { forceMediaProviderSync: true },
     );
   });
 
-  it('does not save media provider edits when cancel is used or the backdrop is clicked', () => {
+  it('catches unmount flush failures for pending media-provider autosaves', async () => {
+    const rejection = new Error('daemon unavailable');
+    const handleUnhandledRejection = vi.fn((event: PromiseRejectionEvent) => {
+      event.preventDefault();
+    });
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    try {
+      const { onPersist, unmount } = renderSettingsDialog(
+        { mode: 'daemon', agentId: 'codex' },
+        { initialSection: 'media' },
+      );
+      onPersist.mockRejectedValueOnce(rejection);
+
+      fireEvent.change(screen.getByLabelText('OpenAI API key'), {
+        target: { value: 'sk-unmount-media' },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Saving…')).toBeTruthy();
+      });
+      unmount();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(onPersist).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mediaProviders: expect.objectContaining({
+            openai: expect.objectContaining({ apiKey: 'sk-unmount-media' }),
+          }),
+        }),
+        expect.objectContaining({ forceMediaProviderSync: true }),
+      );
+      expect(handleUnhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    }
+  });
+
+  it('closes media settings via the close button or backdrop', () => {
     const first = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'media' },
@@ -767,8 +1028,7 @@ describe('SettingsDialog media providers interactions', () => {
     fireEvent.change(screen.getByLabelText('OpenAI API key'), {
       target: { value: 'sk-unsaved-media' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Cancel|Abbrechen/i }));
-    expect(first.onSave).not.toHaveBeenCalled();
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -781,7 +1041,6 @@ describe('SettingsDialog media providers interactions', () => {
       target: { value: 'sk-unsaved-media-2' },
     });
     fireEvent.click(document.querySelector('.modal-backdrop') as HTMLElement);
-    expect(second.onSave).not.toHaveBeenCalled();
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
 });
@@ -805,18 +1064,18 @@ describe('SettingsDialog connectors interactions', () => {
       { initialSection: 'composio' },
     );
 
-    expect(screen.getByRole('heading', { name: 'Connectors' })).toBeTruthy();
+    expect(screen.getAllByRole('heading', { name: 'Connectors' }).length).toBeGreaterThan(0);
     expect(screen.getByText('Saved · ••••uQEg')).toBeTruthy();
     expect((screen.getByPlaceholderText('Paste a new key to replace the saved one') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText(/Your key stays in the local daemon/i)).toBeTruthy();
+    expect(screen.getByText(/your key is saved in the local daemon/i)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Clear' }) as HTMLButtonElement).disabled).toBe(false);
 
     const getApiKeyLink = screen.getByRole('link', { name: /Get API Key/i }) as HTMLAnchorElement;
     expect(getApiKeyLink.href).toBe('https://app.composio.dev/');
   });
 
-  it('supports replacing a saved Composio key and saving the pending edit', () => {
-    const { onSave } = renderSettingsDialog(
+  it('supports replacing a saved Composio key and saving the pending edit', async () => {
+    const { onPersistComposioKey } = renderSettingsDialog(
       {
         mode: 'daemon',
         agentId: 'codex',
@@ -833,23 +1092,18 @@ describe('SettingsDialog connectors interactions', () => {
       target: { value: 'cmp_replacement_secret' },
     });
 
-    expect(screen.getByText(/Unsaved replacement/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        composio: {
-          apiKey: 'cmp_replacement_secret',
-          apiKeyConfigured: true,
-          apiKeyTail: 'uQEg',
-        },
-      }),
-      false,
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
+    await waitFor(() => {
+      expect(onPersistComposioKey).toHaveBeenCalledWith({
+        apiKey: 'cmp_replacement_secret',
+        apiKeyConfigured: true,
+        apiKeyTail: 'uQEg',
+      });
+    });
   });
 
-  it('clears a saved Composio key from the payload', () => {
-    const { onSave } = renderSettingsDialog(
+  it('clears a saved Composio key from the payload', async () => {
+    const { onPersistComposioKey } = renderSettingsDialog(
       {
         mode: 'daemon',
         agentId: 'codex',
@@ -863,24 +1117,23 @@ describe('SettingsDialog connectors interactions', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: /hold on|disconnect/i }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(screen.getByRole('button', { name: /hold on|disconnect/i }));
 
-    expect((screen.getByPlaceholderText('Paste Composio API key') as HTMLInputElement).value).toBe('');
-    expect(screen.getByText(/Keys are stored locally in the daemon/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        composio: {
-          apiKey: '',
-          apiKeyConfigured: false,
-          apiKeyTail: '',
-        },
-      }),
-      false,
-    );
+    await waitFor(() => {
+      expect(onPersistComposioKey).toHaveBeenCalledWith({
+        apiKey: '',
+        apiKeyConfigured: false,
+        apiKeyTail: '',
+      });
+    });
+    expect(screen.getByText(/keys are stored locally in the daemon/i)).toBeTruthy();
   });
 
-  it('does not save Composio edits when cancel is used or the backdrop is clicked', () => {
+  it('closes Composio settings via the close button or backdrop', () => {
     const first = renderSettingsDialog(
       {
         mode: 'daemon',
@@ -897,8 +1150,7 @@ describe('SettingsDialog connectors interactions', () => {
     fireEvent.change(screen.getByPlaceholderText('Paste a new key to replace the saved one'), {
       target: { value: 'cmp_unsaved_secret' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(first.onSave).not.toHaveBeenCalled();
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -919,7 +1171,6 @@ describe('SettingsDialog connectors interactions', () => {
       target: { value: 'cmp_unsaved_secret_2' },
     });
     fireEvent.click(document.querySelector('.modal-backdrop') as HTMLElement);
-    expect(second.onSave).not.toHaveBeenCalled();
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
 });
@@ -982,7 +1233,7 @@ describe('SettingsDialog MCP server interactions', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/mcp/install-info');
     });
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'MCP server' })).toBeTruthy();
+      expect(screen.getByRole('heading', { level: 3, name: 'MCP server' })).toBeTruthy();
     });
 
     expect(screen.getByText(/Run this in your terminal/i)).toBeTruthy();
@@ -1107,8 +1358,8 @@ describe('SettingsDialog language interactions', () => {
     expect(document.documentElement.getAttribute('dir')).toBe('rtl');
   });
 
-  it('does not route language changes through Save and Cancel does not revert an applied locale', async () => {
-    const { onSave, onClose } = renderLanguageSettingsDialog('en');
+  it('does not route language changes through autosave and closing does not revert an applied locale', async () => {
+    const { onPersist, onClose } = renderLanguageSettingsDialog('en');
 
     fireEvent.click(screen.getByRole('button', { name: /English/i }));
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /Deutsch/i }));
@@ -1116,8 +1367,8 @@ describe('SettingsDialog language interactions', () => {
     expect(window.localStorage.getItem('open-design:locale')).toBe('de');
     expect(document.documentElement.getAttribute('lang')).toBe('de');
 
-    fireEvent.click(screen.getByRole('button', { name: /Cancel|Abbrechen/i }));
-    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle(/close|schließen/i));
+    expect(onPersist).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem('open-design:locale')).toBe('de');
     expect(document.documentElement.getAttribute('lang')).toBe('de');
@@ -1147,8 +1398,8 @@ describe('SettingsDialog notifications interactions', () => {
     expect(screen.getByRole('group', { name: 'Failure sound' })).toBeTruthy();
   });
 
-  it('updates completion success and failure sounds and saves the edited notification config', () => {
-    const { onSave } = renderSettingsDialog(
+  it('updates completion success and failure sounds and autosaves the edited notification config', async () => {
+    const { onPersist } = renderSettingsDialog(
       {
         mode: 'daemon',
         agentId: 'codex',
@@ -1168,8 +1419,8 @@ describe('SettingsDialog notifications interactions', () => {
     expect(playSoundMock).toHaveBeenNthCalledWith(1, 'pluck');
     expect(playSoundMock).toHaveBeenNthCalledWith(2, 'thud');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         notifications: {
           soundEnabled: true,
@@ -1178,7 +1429,7 @@ describe('SettingsDialog notifications interactions', () => {
           desktopEnabled: false,
         },
       }),
-      true,
+      {},
     );
   });
 
@@ -1228,15 +1479,14 @@ describe('SettingsDialog notifications interactions', () => {
     expect(screen.queryByRole('button', { name: 'Send test' })).toBeNull();
   });
 
-  it('does not save notification edits when cancel is used or the backdrop is clicked', () => {
+  it('closes notification settings via the close button or backdrop', () => {
     const first = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'notifications' },
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: 'offline' })[0] as HTMLButtonElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(first.onSave).not.toHaveBeenCalled();
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -1247,7 +1497,6 @@ describe('SettingsDialog notifications interactions', () => {
     );
     fireEvent.click(screen.getAllByRole('button', { name: 'offline' })[0] as HTMLButtonElement);
     fireEvent.click(document.querySelector('.modal-backdrop') as HTMLElement);
-    expect(second.onSave).not.toHaveBeenCalled();
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
 });
@@ -1299,15 +1548,15 @@ describe('SettingsDialog appearance interactions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Light' }));
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     first.unmount();
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
 
-  it('saves System mode explicitly and preserves accent variables without an explicit document theme', () => {
-    const { onSave } = renderSettingsDialog(
+  it('persists System mode explicitly and preserves accent variables without an explicit document theme', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex', theme: 'dark', accentColor: '#2563eb' },
       { initialSection: 'appearance' },
     );
@@ -1316,13 +1565,13 @@ describe('SettingsDialog appearance interactions', () => {
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#2563eb');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         theme: 'system',
         accentColor: '#2563eb',
       }),
-      true,
+      {},
     );
   });
 });
@@ -1366,8 +1615,8 @@ describe('SettingsDialog pets interactions', () => {
     expect(screen.getByText('Voidling')).toBeTruthy();
   });
 
-  it('supports editing and saving a custom pet', async () => {
-    const { onSave } = renderSettingsDialog(
+  it('supports editing and persisting a custom pet', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'pet' },
     );
@@ -1389,9 +1638,9 @@ describe('SettingsDialog pets interactions', () => {
     expect(screen.getByText('Hi there, builder.')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Use my pet' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         pet: expect.objectContaining({
           adopted: true,
@@ -1405,12 +1654,12 @@ describe('SettingsDialog pets interactions', () => {
           }),
         }),
       }),
-      true,
+      {},
     );
   });
 
   it('toggles an adopted pet between tucked and awake states', async () => {
-    const { onSave } = renderSettingsDialog(
+    const { onPersist } = renderSettingsDialog(
       {
         mode: 'daemon',
         agentId: 'codex',
@@ -1433,15 +1682,15 @@ describe('SettingsDialog pets interactions', () => {
     fireEvent.click(toggle);
     expect(screen.getByRole('button', { name: 'Wake' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         pet: expect.objectContaining({
           adopted: true,
           enabled: false,
         }),
       }),
-      true,
+      {},
     );
   });
 
@@ -1541,8 +1790,8 @@ describe('SettingsDialog skills and design systems interactions', () => {
     expect(screen.queryByText('dashboard')).toBeNull();
   });
 
-  it('opens a skill preview and saves disabled skills from toggle switches', async () => {
-    const { onSave } = renderSettingsDialog(
+  it('opens a skill preview and persists disabled skills from toggle switches', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'library' },
     );
@@ -1559,18 +1808,18 @@ describe('SettingsDialog skills and design systems interactions', () => {
 
     const toggles = screen.getAllByTitle('Toggle');
     fireEvent.click(toggles[0] as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         disabledSkills: ['blog-post'],
       }),
-      true,
+      {},
     );
   });
 
-  it('switches to design systems, previews details, and saves disabled design systems', async () => {
-    const { onSave } = renderSettingsDialog(
+  it('switches to design systems, previews details, and persists disabled design systems', async () => {
+    const { onPersist } = renderSettingsDialog(
       { mode: 'daemon', agentId: 'codex' },
       { initialSection: 'library' },
     );
@@ -1596,13 +1845,13 @@ describe('SettingsDialog skills and design systems interactions', () => {
     });
 
     fireEvent.click(screen.getAllByTitle('Toggle')[0] as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(onSave).toHaveBeenCalledWith(
+    await waitForPersist(
+      onPersist,
       expect.objectContaining({
         disabledDesignSystems: ['signal-green'],
       }),
-      true,
+      {},
     );
   });
 
@@ -1643,7 +1892,7 @@ describe('SettingsDialog about interactions', () => {
       },
     );
 
-    expect(screen.getByRole('heading', { name: 'About' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 3, name: 'About' })).toBeTruthy();
     expect(screen.getByText('Version')).toBeTruthy();
     expect(screen.getByText('0.4.1')).toBeTruthy();
     expect(screen.getByText('Channel')).toBeTruthy();
@@ -1682,8 +1931,7 @@ describe('SettingsDialog about interactions', () => {
       },
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(first.onSave).not.toHaveBeenCalled();
+    fireEvent.click(first.container.querySelector('.settings-close') as HTMLElement);
     expect(first.onClose).toHaveBeenCalledTimes(1);
 
     cleanup();
@@ -1703,7 +1951,6 @@ describe('SettingsDialog about interactions', () => {
     );
 
     fireEvent.click(document.querySelector('.modal-backdrop') as HTMLElement);
-    expect(second.onSave).not.toHaveBeenCalled();
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
 });

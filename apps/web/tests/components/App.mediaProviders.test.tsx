@@ -57,12 +57,12 @@ vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: ({
     initial,
     initialSection,
-    onSave,
+    onPersist,
     onClose,
   }: {
     initial: AppConfig;
     initialSection?: string;
-    onSave: (next: AppConfig) => void;
+    onPersist: (next: AppConfig) => void;
     onClose: () => void;
   }) => (
     <div role="dialog" aria-label="Settings dialog">
@@ -70,7 +70,7 @@ vi.mock('../../src/components/SettingsDialog', () => ({
       <button
         type="button"
         onClick={() =>
-          onSave({
+          onPersist({
             ...initial,
             mediaProviders: {
               openai: {
@@ -209,7 +209,9 @@ describe('App media provider sync flows', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(mockedSyncMediaProvidersToDaemon).toHaveBeenCalledWith(configuredProviders);
+      expect(mockedSyncMediaProvidersToDaemon).toHaveBeenCalledWith(configuredProviders, {
+        daemonProviders: {},
+      });
     });
   });
 
@@ -217,6 +219,7 @@ describe('App media provider sync flows', () => {
     mockedLoadConfig.mockReturnValue({
       ...baseConfig,
       onboardingCompleted: false,
+      privacyDecisionAt: 1778244000000,
     });
 
     render(<App />);
@@ -236,13 +239,13 @@ describe('App media provider sync flows', () => {
             model: '',
           },
         },
-        { force: true },
+        { daemonProviders: {}, force: undefined, throwOnError: undefined },
       );
     });
 
     expect(mockedSaveConfig).toHaveBeenCalledWith(
       expect.objectContaining({
-        onboardingCompleted: true,
+        onboardingCompleted: false,
         mediaProviders: {
           openai: {
             apiKey: 'media-key',
@@ -254,7 +257,7 @@ describe('App media provider sync flows', () => {
     );
     expect(mockedSyncConfigToDaemon).toHaveBeenCalledWith(
       expect.objectContaining({
-        onboardingCompleted: true,
+        onboardingCompleted: false,
         mediaProviders: {
           openai: {
             apiKey: 'media-key',
