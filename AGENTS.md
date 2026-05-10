@@ -6,7 +6,7 @@ This file is the single source of truth for agents entering this repository. Rea
 
 - Product and onboarding: `README.md`, `README.zh-CN.md`, `QUICKSTART.md`.
 - Contribution and environment: `CONTRIBUTING.md`, `CONTRIBUTING.zh-CN.md`.
-- Containerized fork distribution: `docs/cubecloud-openspace-installation.md`, `docs/cubecloud-fork-release-0.3.0.md`, `docs/cubecloud-upstream-sync-0.4.0.md`.
+- Containerized fork distribution: `docs/cubecloud-openspace-installation.md`, `docs/cubecloud-fork-release-0.3.0.md`, `docs/cubecloud-fork-release-0.4.0.md`, `docs/cubecloud-upstream-sync-0.4.0.md`.
 - Architecture and protocols: `docs/spec.md`, `docs/architecture.md`, `docs/skills-protocol.md`, `docs/agent-adapters.md`, `docs/modes.md`.
 - Roadmap and references: `docs/roadmap.md`, `docs/references.md`, `docs/code-review-guidelines.md`, `specs/current/maintainability-roadmap.md`.
 - Directory-level agent guidance: `apps/AGENTS.md`, `packages/AGENTS.md`, `tools/AGENTS.md`, `e2e/AGENTS.md`.
