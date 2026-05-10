@@ -30,20 +30,22 @@ Docker release outputs use these conventions:
 - GHCR web image: `ghcr.io/<owner>/<repo>-web:<version>`
 - Optional rolling tag refresh: `latest`
 
-Recommended update lane:
+Fork sync and deployment policy:
 
-1. Keep your CubeCloud branding, local data paths, env defaults, and credentials on your fork's `main` branch.
-2. As the fork owner, cherry-pick selected fixes from `upstream/main` onto your fork's `main` instead of treating merge or rebase as the normal update path.
-3. Validate the updated fork branch locally.
-4. Push the validated `fork/main` branch and let `.github/workflows/publish-ghcr.yml` refresh the fork GHCR `main`, `sha-*`, and `latest` tags.
-5. Run `.github/workflows/release-docker.yml` only when you also want a named versioned Docker release in addition to the refreshed `latest` lane.
-6. On other machines, pull the refreshed fork `latest` images and restart the stack.
+1. Use `upstream` only as the source of incoming code. Sync upstream changes into your fork; do not treat routine fork sync as pushing CubeCloud-specific commits back to upstream.
+2. Use `origin/main` as the only deployment source of truth for CubeCloud runtime behavior, GHCR images, and release tags.
+3. Use two downstream lanes:
+  - validation or staging machines may follow fork GHCR `latest`
+  - important, long-lived, or user-facing downstream machines should prefer the newest pinned fork release such as `0.4.0`
+4. Land validated runtime changes on `fork/main` first so `.github/workflows/publish-ghcr.yml` refreshes fork `latest`, `main`, and `sha-*` tags.
+5. Run `.github/workflows/release-docker.yml` when you want a stable, reproducible snapshot for downstream environments in addition to the rolling `latest` lane.
 
 Operational rule:
 
 - local repo changes and validated `fork/main` updates should always land on the fork GHCR `latest` lane first
-- other machines should take effect by `docker compose pull` plus `docker compose up -d`
-- the branch tag `main` is a convenience branch tag, but `latest` is the default deployment lane for checked-out repos and downstream machines
+- the branch tag `main` is a convenience branch tag, but `latest` is the rolling validation lane for checked-out repos and test machines
+- important downstream machines should normally move by adopting the newest validated pinned fork release, not by continuously following `latest`
+- downstream machines should update by `docker compose pull` plus `docker compose up -d`, not by rebuilding from source
 
 The root `compose.yaml` now defaults to the verified fork GHCR path `ghcr.io/jzkk720/open-design-{daemon,web}:latest` while keeping the build sections available for explicit local rebuilds.
 
@@ -61,7 +63,7 @@ The example file now defaults to the verified fork GHCR path for this repo:
 
 Override the owner or tag only when you are intentionally targeting a different publishing fork or a pinned release tag.
 
-For local machines that should follow future GHCR updates instead of rebuilding from source each time, keep a local `.env.ghcr` file based on the example and use the GHCR compose file on the same workstation.
+For local validation machines that should follow future GHCR updates instead of rebuilding from source each time, keep a local `.env.ghcr` file based on the example and use the GHCR compose file on the same workstation.
 
 `compose.ghcr.yaml` also defaults to `ghcr.io/jzkk720/open-design-{daemon,web}:latest` when no env overrides are provided, so the fork GHCR lane is now the explicit deployment default.
 
@@ -80,7 +82,7 @@ pnpm typecheck
 git push origin main
 ```
 
-That push updates the fork GHCR publish lane automatically. Other machines should stay on `.env.ghcr` plus `compose.ghcr.yaml` with `OPEN_DESIGN_IMAGE_TAG=latest` so they only need pull/update after the fork owner republishes.
+That push updates the fork GHCR publish lane automatically. Validation machines can stay on `.env.ghcr` plus `compose.ghcr.yaml` with `OPEN_DESIGN_IMAGE_TAG=latest`; important downstream machines can point the same files at the newest validated pinned release such as `OPEN_DESIGN_IMAGE_TAG=0.4.0`.
 
 Example update flow:
 

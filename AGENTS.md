@@ -108,6 +108,7 @@ Use this sequence when adapting Open Design build flows for another app or produ
 	- If CubeCloud customizations on `fork/main` affect the runtime images, treat the fork GHCR publish lane as the deployment source of truth.
 	- The default `compose.yaml` runtime should follow the fork GHCR `latest` tag unless the operator explicitly asks to rebuild from local source.
 	- Local repo changes and validated `fork/main` updates should refresh the fork GHCR `latest` tags first; downstream machines should only need `docker compose pull` plus `up -d` to take effect.
+	- Operational policy: use `upstream` only for incoming code, keep `origin/main` as the only deployment source of truth, let validation or staging environments follow fork GHCR `latest`, and prefer the newest pinned fork release for important long-lived downstream environments.
 	- Docs-only and repo-guidance-only pushes should not move fork GHCR `latest`; `publish-ghcr` is gated for `*.md`, `docs/**`, `.github/instructions/**`, and `.github/skills/**`.
 	- A successful local source build does not prove the pulled GHCR images contain the same changes.
 	- Workflow presence proves the repo is configured to publish images, not that a fork package already exists or is the deployed source of truth.
@@ -133,7 +134,7 @@ This repository is currently being adapted for another app/product shell. For bu
 - Primary edit surfaces: `apps/web`, `apps/desktop`, `tools/dev`, and `tools/pack`.
 - For containerized distribution decisions, use `docs/cubecloud-openspace-installation.md` as the reference for fork-published GHCR images, install scripts, and update lanes.
 - Keep CubeCloud customizations on `fork/main`; only point deployments at upstream GHCR when that does not drop required fork-only runtime behavior.
-- Treat fork GHCR `latest` as the operational lane for local repo changes and validated `fork/main` updates; versioned tags are optional pinned overlays, not the default update path.
+- Treat fork GHCR `latest` as the rolling validation lane for local repo changes and validated `fork/main` updates; prefer the newest pinned fork release for important long-lived downstream environments.
 - Preserve full existing product behavior. Do not remove, narrow, or silently change existing functions as a shortcut for adaptation work.
 - Allowed agent actions: review build changes, generate adaptation patches, run validation commands, and prepare release artifacts.
 - If a change requires stepping into `apps/daemon`, `apps/packaged`, or `packages/*`, explain the dependency hop before editing and keep the change minimal.

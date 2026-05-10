@@ -185,10 +185,10 @@ The one area likely to remain fork-sensitive even after cleanup is daemon-side l
 4. Validate each cherry-pick batch on the fork before pushing.
 5. Push validated `fork/main` updates so `.github/workflows/publish-ghcr.yml` refreshes the fork GHCR `latest` lane.
 6. Use `.github/workflows/release-docker.yml` only when you also want a named versioned Docker release on top of the refreshed `latest` lane.
-7. Keep downstream machines on the fork GHCR `latest` lane so they only need pull/update after the fork owner republishes.
+7. Let validation or staging environments follow fork GHCR `latest`, and keep important downstream machines on the newest validated pinned fork release so they only move when the owner intentionally promotes them.
 
 ## Short-term conclusion
 
 Today, selective owner-reviewed cherry-picks are the lower-risk and preferred way to absorb upstream fixes while preserving CubeCloud-specific runtime behavior.
 
-Long-term, even if the conflict set drops further, keep the fork on a cherry-pick-first update policy unless the owner explicitly chooses a broader merge/rebase event. The goal is for `fork/main` to stay authoritative for CubeCloud identity and env-driven deployment behavior, with fork GHCR `latest` as the operational update lane for other machines.
+Long-term, even if the conflict set drops further, keep the fork on a cherry-pick-first update policy unless the owner explicitly chooses a broader merge/rebase event. The goal is for `fork/main` to stay authoritative for CubeCloud identity and env-driven deployment behavior, with fork GHCR `latest` as the rolling validation lane and the newest pinned fork release as the preferred stable downstream lane.

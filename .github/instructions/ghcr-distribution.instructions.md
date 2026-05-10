@@ -24,7 +24,7 @@ applyTo:
   - explicit local source rebuild lane: `compose.yaml` with `docker compose up --build` or `docker compose build`
   - GHCR publish lane: GHCR workflows plus install or update scripts
 - `compose.yaml` should default to the verified fork GHCR `latest` images unless the operator explicitly asks for a local source rebuild.
-- Local repo changes and validated `fork/main` pushes should refresh fork GHCR `latest`; downstream machines should follow that lane with pull/update rather than rebuild locally.
+- Local repo changes and validated `fork/main` pushes should refresh fork GHCR `latest`; use that lane for repo-local validation and staging, and prefer the newest pinned fork release for important long-lived downstream environments.
 - Prefer upstream GHCR only when the required runtime behavior already exists upstream or the remaining fork-only changes do not affect image contents.
 - If CubeCloud-specific changes on `fork/main` affect the daemon or web images, treat fork GHCR as the deployment source of truth.
 - Do not use a successful local source build as proof that pulled GHCR images contain the same changes.

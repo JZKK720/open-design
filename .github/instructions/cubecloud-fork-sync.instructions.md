@@ -21,9 +21,9 @@ applyTo:
 
 - Start by verifying live branch state. `docs/cubecloud-upstream-sync-0.4.0.md` is a seam and conflict snapshot, not a standing ahead or behind count.
 - Current release-lane split:
-  - fork GHCR `latest` is the rolling update lane for future fork syncs and checked-out repo updates
-  - `ghcr.io/jzkk720/open-design-{daemon,web}:0.3.0` is the current pinned Docker release snapshot for the validated upstream integration at `02b6486`
-  - do not assume `latest` and `0.3.0` resolve to the same revision after later fork-only workflow or policy commits
+  - fork GHCR `latest` is the rolling validation lane for future fork syncs, checked-out repo updates, and staging environments
+  - `ghcr.io/jzkk720/open-design-{daemon,web}:0.4.0` is the current pinned Docker release snapshot for the validated upstream `0.6.0` integration and split-port Docker fix at `1f37351f`
+  - do not assume `latest` and `0.4.0` resolve to the same revision after later fork runtime releases
 - Current GHCR publish gate:
   - `.github/workflows/publish-ghcr.yml` ignores docs-only and repo-guidance-only pushes under `*.md`, `docs/**`, `.github/instructions/**`, and `.github/skills/**`
   - publish-relevant pushes to `fork/main` still refresh fork `latest`, branch, and `sha-*` tags
@@ -35,7 +35,7 @@ applyTo:
 - Default policy remains cherry-pick first:
   - keep `fork/main` authoritative for CubeCloud runtime and deployment behavior
   - use owner-reviewed cherry-picks from `upstream/main` as the normal sync lane
-  - for the next upstream version bump, keep `latest` as the rolling lane and cut a new semver Docker release only when the user wants a new pinned snapshot
+  - keep `latest` as the rolling validation lane and cut a new semver Docker release when the user wants a stable downstream snapshot
   - only recommend merge or rebase when the owner explicitly asks for a broader refresh and accepts conflict resolution plus GHCR republish
 - Preserve these fork overlay surfaces unless the user explicitly retires them:
   - branding assets and pack icons
@@ -49,8 +49,9 @@ applyTo:
   2. run `.github/workflows/release-docker.yml` only when the user also wants a semver Docker tag and GitHub release notes
   3. keep `docs/cubecloud-openspace-installation.md` aligned with the chosen release and update lane
 - Do not treat a successful local source build as proof that the fork GHCR images contain the same bits. Confirm the publish lane separately.
-- Downstream machines should follow the fork GHCR update lane:
-  - prefer `.env.ghcr` plus `compose.ghcr.yaml` for explicit owner or tag overrides and update-helper flows
+- Use two downstream lanes:
+  - validation or staging environments may follow fork GHCR `latest`
+  - important or long-lived downstream environments should prefer `.env.ghcr` plus `compose.ghcr.yaml` pinned to the newest validated fork release such as `0.4.0`
   - `compose.yaml` may follow fork `latest` for repo-local convenience, but routine downstream updates should still be pull plus restart, not rebuild from source
 - Smoke-test expectations after publish or update:
   1. resolve the image references from the active compose lane
@@ -61,7 +62,7 @@ applyTo:
 - Reuse existing references instead of restating procedures:
   - `AGENTS.md`
   - `docs/cubecloud-openspace-installation.md`
-  - `docs/cubecloud-fork-release-0.3.0.md`
+  - `docs/cubecloud-fork-release-0.4.0.md`
   - `docs/cubecloud-upstream-sync-0.4.0.md`
   - `.github/instructions/ghcr-distribution.instructions.md`
   - `.github/instructions/open-design-container-runtime-diagnostics.instructions.md`
