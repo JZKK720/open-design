@@ -1,11 +1,11 @@
 # CubeCloud Fork Release 0.4.0
 
-This brief defines the next named Docker release for the CubeCloud fork after the validated upstream `0.6.0` integration now running on `fork/main`.
+This brief defines the current `0.4.0` named Docker release for the CubeCloud fork after the validated upstream `0.6.0` integration and the split-port Docker proxy fix now running on `fork/main`.
 
 ## Base state
 
-- Current fork `main`: `86965b23`
-- Current fork GHCR `latest`: OCI revision `86965b23e06f6ad478449e9cef267535c08deff3`
+- Current fork `main`: `1f37351f`
+- Current fork GHCR `latest`: OCI revision `1f37351fcbe69bf517fe0befb913d86a5dea6cb5`
 - Previous named Docker release: `open-design-docker-v0.3.0` at commit `02b6486`
 - Upstream status absorbed into the fork for this release: the validated upstream `0.6.0` merge is now integrated on top of the fork while keeping the fork-only runtime overlays intact
 
@@ -24,49 +24,53 @@ These fork-specific behaviors remain part of the release and should be treated a
 - trusted local OpenAI-compatible gateways still work without an API key for the intended fork cases such as `host.docker.internal` and direct private IPv4 endpoints
 - internal IPv6 and mapped-private IPv6 endpoints remain blocked before proxying
 - the fork GHCR lane remains the deployment source of truth for downstream Docker machines
+- the split-port Docker lane now preserves the full forwarded browser `Host` header and `OD_WEB_PORT`, so guarded routes such as `/api/app-config` work behind the web proxy on `:7831`
 - the restored `Connectors` top tab is present in the integrated `0.6.0` runtime instead of disappearing behind the upstream merge
 
 ## Validation completed before release
 
-- the validated merge landed on fork `main` as commit `86965b23`
-- `publish-ghcr` refreshed both fork GHCR `latest` tags to OCI revision `86965b23e06f6ad478449e9cef267535c08deff3`
+- the release commit landed on fork `main` as `1f37351f`
+- `publish-ghcr` refreshed both fork GHCR `latest` tags to OCI revision `1f37351fcbe69bf517fe0befb913d86a5dea6cb5`
 - the merge preview worktree passed `pnpm guard`
 - the merge preview worktree passed `pnpm typecheck`
 - targeted post-merge tests passed:
   - `pnpm --filter @open-design/daemon test -- tests/app-config.test.ts`
   - `pnpm --filter @open-design/web test -- tests/state/config.test.ts tests/components/App.connectors.test.tsx`
+- the refreshed workspace passed `pnpm install` followed by `pnpm --filter @open-design/web build`
 - the isolated preview stack passed browser/runtime smoke validation on ports `18456` and `18831`, including the restored `Connectors` navigation surface
-- the real downstream GHCR lane passed via `docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull` and `up -d`, with matching image IDs plus healthy `http://localhost:7831` and `http://localhost:7456/api/health`
+- the real downstream GHCR lane passed via `docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull` and `up -d`, with matching image revisions plus healthy `http://localhost:7831`, healthy `http://localhost:7456/api/health`, proxied `/api/app-config` returning `200`, and the `Connectors` surface loading in the browser
 
-## Workflow inputs
+## Workflow result
 
-Run `.github/workflows/release-docker.yml` with:
+`.github/workflows/release-docker.yml` completed successfully from `fork/main` commit `1f37351f` with:
 
 - `version`: `0.4.0`
 - `publish_latest`: `true`
 
-Suggested `notes` input:
+Published `notes` input:
 
 ```text
-CubeCloud fork minor Docker release on top of the validated upstream 0.6.0 integration now published on fork main `86965b23`.
+CubeCloud fork minor Docker release on top of the validated upstream 0.6.0 integration now published on fork main `1f37351f`.
 
 Highlights in this release:
 - integrates the validated upstream 0.6.0 merge onto the CubeCloud fork
+- includes the split-port Docker proxy Host-header fix for guarded daemon routes such as /api/app-config
 - keeps the fork bootstrap contract for daemon-provided API defaults
 - preserves trusted local/private OpenAI-compatible gateway behavior required by the fork
 - keeps the restored Connectors navigation surface in the integrated runtime
 - refreshes fork GHCR latest and provides a pinned Docker release for downstream machines
 
 Validation completed before this release:
+- refreshed the workspace with pnpm install and passed pnpm --filter @open-design/web build
 - preview worktree passed pnpm guard and pnpm typecheck
 - targeted daemon and web regression tests passed
 - isolated preview browser/runtime smoke checks passed
-- downstream GHCR compose smoke test passed with matching image IDs and healthy web + daemon endpoints
+- downstream GHCR compose smoke test passed with matching image revisions, healthy web + daemon endpoints, and proxied /api/app-config returning 200
 ```
 
-## Expected release outputs
+## Published release outputs
 
-After the workflow succeeds, the named release should expose:
+The named release now exposes:
 
 - GitHub release tag: `open-design-docker-v0.4.0`
 - GHCR daemon image: `ghcr.io/jzkk720/open-design-daemon:0.4.0`
@@ -77,7 +81,7 @@ After the workflow succeeds, the named release should expose:
 
 ## Pinned install and update guide
 
-Once the workflow finishes, these are the pinned commands for machines that should follow the named Docker release instead of the moving `latest` lane.
+These are the pinned commands for machines that should follow the named Docker release instead of the moving `latest` lane.
 
 Linux or macOS:
 

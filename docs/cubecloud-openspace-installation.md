@@ -17,7 +17,7 @@ For named Docker releases with versioned GHCR tags and GitHub release notes, use
 
 - `.github/workflows/release-docker.yml`
 
-Prepared brief for the next named fork Docker release:
+Release brief for the current named fork Docker release:
 
 - `docs/cubecloud-fork-release-0.4.0.md`
 
