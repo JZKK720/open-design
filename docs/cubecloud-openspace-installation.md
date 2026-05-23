@@ -7,7 +7,7 @@ This repository is being adapted so Open Design runs as an internal CubeCloud de
 Keep the customization in your own fork's `main` branch, then let GitHub Actions publish your runtime images to GHCR.
 
 - The new workflow is `.github/workflows/publish-ghcr.yml`.
-- It publishes two images from your fork on every push to `main` and on manual dispatch.
+- It publishes two images from your fork on publish-relevant pushes to `main` and on manual dispatch.
 - Image names follow this pattern:
   - `ghcr.io/<owner>/<repo>-daemon`
   - `ghcr.io/<owner>/<repo>-web`

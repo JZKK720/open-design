@@ -7,8 +7,8 @@ import type {
   ProviderModelsRequest,
   ProviderModelsResponse,
 } from '@open-design/contracts/api/providerModels';
-import { isLoopbackApiHost, validateBaseUrl } from '@open-design/contracts/api/connectionTest';
-import { redactSecrets } from './connectionTest.js';
+import { isTrustedLocalApiHost } from '@open-design/contracts/api/connectionTest';
+import { redactSecrets, validateBaseUrlResolved } from './connectionTest.js';
 
 type ProviderModelsInput = ProviderModelsRequest & { signal?: AbortSignal };
 
@@ -149,7 +149,9 @@ function extractGoogleModels(data: unknown): ProviderModelOption[] {
 }
 
 function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, apiKey: string): string {
-  if (protocol === 'openai') return appendVersionedApiPath(baseUrl, '/models');
+  if (protocol === 'openai' || protocol === 'senseaudio') {
+    return appendVersionedApiPath(baseUrl, '/models');
+  }
   if (protocol === 'anthropic') {
     const url = new URL(appendVersionedApiPath(baseUrl, '/models'));
     url.searchParams.set('limit', '1000');
@@ -167,10 +169,12 @@ function providerModelsHeaders(
   protocol: ConnectionTestProtocol,
   apiKey: string,
 ): Record<string, string> {
-  if (protocol === 'openai') return { authorization: `Bearer ${apiKey}` };
+  if (protocol === 'openai' || protocol === 'senseaudio') {
+    return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+  }
   if (protocol === 'anthropic') {
     return {
-      'x-api-key': apiKey,
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
       'anthropic-version': '2023-06-01',
     };
   }
@@ -178,7 +182,9 @@ function providerModelsHeaders(
 }
 
 function extractModels(protocol: ConnectionTestProtocol, data: unknown): ProviderModelOption[] {
-  if (protocol === 'openai') return extractOpenAiModels(data);
+  // SenseAudio's /v1/models response follows the OpenAI envelope
+  // (`{ data: [{ id, ... }] }`), so the same extractor handles both.
+  if (protocol === 'openai' || protocol === 'senseaudio') return extractOpenAiModels(data);
   if (protocol === 'anthropic') return extractAnthropicModels(data);
   if (protocol === 'google') return extractGoogleModels(data);
   return [];
@@ -197,7 +203,7 @@ export async function listProviderModels(
     };
   }
 
-  const validated = validateBaseUrl(input.baseUrl);
+  const validated = await validateBaseUrlResolved(input.baseUrl);
   if (validated.error || !validated.parsed) {
     return {
       ok: false,
@@ -293,7 +299,7 @@ export async function listProviderModels(
     const kind = networkErrorToKind(err);
     const message = err instanceof Error ? err.message : String(err);
     const host = validated.parsed.hostname;
-    const scope = isLoopbackApiHost(host) ? 'local' : 'remote';
+    const scope = isTrustedLocalApiHost(host) ? 'local' : 'remote';
     console.warn(
       `[provider:models] ${input.protocol} ${scope} ${host} → ${kind} in ${latencyMs}ms ${redactSecrets(message, [input.apiKey])}`,
     );
