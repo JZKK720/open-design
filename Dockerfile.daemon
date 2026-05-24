@@ -15,6 +15,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
 COPY assets ./assets
 COPY craft ./craft
+COPY design-templates ./design-templates
 COPY design-systems ./design-systems
 COPY e2e ./e2e
 COPY packages ./packages
