@@ -877,6 +877,47 @@ describe('POST /api/test/connection provider mode', () => {
     }
   });
 
+  // Regression for the DNS-bypass SSRF gap flagged on PR #1176: provider
+  // mode must run the same resolved-IP check as the proxy/finalize paths
+  // so a public hostname pointing at a private address can't be fetched.
+  it('reports forbidden for hostnames that resolve to a private IP without calling fetch', async () => {
+    const fetchMock = passThroughOrUpstream(() => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+    const dnsSpy = vi
+      .spyOn(dnsPromises, 'lookup')
+      .mockImplementation((async (hostname: string) => {
+        if (hostname === 'rebind.example.test') {
+          return [{ address: '10.0.0.5', family: 4 }];
+        }
+        const err: NodeJS.ErrnoException = new Error('ENOTFOUND');
+        err.code = 'ENOTFOUND';
+        throw err;
+      }) as unknown as typeof dnsPromises.lookup);
+    try {
+      const res = await realFetch(`${baseUrl}/api/test/connection`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'provider',
+          protocol: 'openai',
+          baseUrl: 'https://rebind.example.test/v1',
+          apiKey: 'sk-good',
+          model: 'gpt-4o',
+        }),
+      });
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.ok).toBe(false);
+      expect(body.kind).toBe('forbidden');
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => !String(input).startsWith(baseUrl),
+        ),
+      ).toBe(false);
+    } finally {
+      dnsSpy.mockRestore();
+    }
+  });
+
   it('allows IPv6 loopback base URLs for local OpenAI-compatible providers', async () => {
     for (const loopbackBaseUrl of [
       'http://[::1]:1234/v1',

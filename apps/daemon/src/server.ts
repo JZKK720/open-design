@@ -12,6 +12,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import {
+  defaultScenarioPluginIdForProjectMetadata,
+  type OpenDesignGithubLatestReleaseResponse,
+  type OpenDesignGithubRepoResponse,
+  PLUGIN_SHARE_ACTION_PLUGIN_IDS,
+} from '@open-design/contracts';
+import {
   composeSystemPrompt,
   renderCodexImagegenOverride,
   resolveExclusiveSurface,
@@ -80,12 +86,6 @@ import {
   updateUserDesignSystemRevisionStatus,
 } from './design-systems.js';
 import { createDesignSystemGenerationJobStore } from './design-system-generation-jobs.js';
-import {
-  defaultScenarioPluginIdForProjectMetadata,
-  type OpenDesignGithubLatestReleaseResponse,
-  type OpenDesignGithubRepoResponse,
-  PLUGIN_SHARE_ACTION_PLUGIN_IDS,
-} from '@open-design/contracts';
 import {
   applyDiffReviewDecisionToCwd,
   applyPlugin,
@@ -484,6 +484,16 @@ export function composeLiveInstructionPrompt({
   return parts.join('\n\n---\n\n');
 }
 
+function renderPluginBriefTemplate(template, inputs = {}) {
+  if (typeof template !== 'string' || template.length === 0) return '';
+  return template.replace(/\{\{\s*([a-zA-Z_][\w-]*)\s*\}\}/g, (full, key) => {
+    if (!Object.hasOwn(inputs, key)) return full;
+    const value = inputs[key];
+    if (value === undefined || value === null || value === '') return full;
+    return String(value);
+  });
+}
+
 export function resolveResearchCommandContract(research, message) {
   if (!research || !research.enabled) return '';
   const researchQuery =
@@ -876,7 +886,6 @@ function readAppConfigDefaultsFromEnv() {
 }
 
 const APP_CONFIG_ENV_DEFAULTS = readAppConfigDefaultsFromEnv();
-
 function normalizeVisualMarkKind(value) {
   return value === 'click' || value === 'click+stroke' || value === 'stroke'
     ? value

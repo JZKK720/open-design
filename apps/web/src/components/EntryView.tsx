@@ -24,6 +24,10 @@ import type {
   PromptTemplateSummary,
   SkillSummary,
 } from '../types';
+// `EntryShell` owns the redesigned home layout (left rail + centered
+// hero + recent projects + plugins). Keeping the redesign in a sibling
+// component lets future rebases against upstream `EntryView` (props,
+// connector lifecycle, exported helpers) stay close to a no-op here.
 import { EntryShell } from './EntryShell';
 import type { IntegrationTab } from './IntegrationsView';
 import type { CreateInput } from './NewProjectPanel';
