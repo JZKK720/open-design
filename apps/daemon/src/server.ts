@@ -60,6 +60,26 @@ import {
   splitDerivedSkillId,
 } from './skills.js';
 import { validateLinkedDirs } from './linked-dirs.js';
+import { installFromTarget, uninstallById, sanitizeRepoName } from './library-install.js';
+import { buildWindowsFolderDialogCommand, parseFolderDialogStdout } from './native-folder-dialog.js';
+import { listCodexPets, readCodexPetSpritesheet } from './codex-pets.js';
+import { syncCommunityPets } from './community-pets-sync.js';
+import {
+  createUserDesignSystem,
+  deleteUserDesignSystem,
+  LEGACY_DESIGN_SYSTEM_ARTIFACTS,
+  linkUserDesignSystemProject,
+  listDesignSystems,
+  listUserDesignSystemFiles,
+  listUserDesignSystemRevisions,
+  readDesignSystem,
+  readDesignSystemPackageInfo,
+  readUserDesignSystemFile,
+  resolveDesignSystemAssets,
+  updateUserDesignSystem,
+  updateUserDesignSystemRevisionStatus,
+} from './design-systems.js';
+import { createDesignSystemGenerationJobStore } from './design-system-generation-jobs.js';
 import {
   defaultScenarioPluginIdForProjectMetadata,
   type OpenDesignGithubLatestReleaseResponse,
@@ -67,6 +87,30 @@ import {
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
 } from '@open-design/contracts';
 import {
+  applyDiffReviewDecisionToCwd,
+  applyPlugin,
+  defaultBundledRoot,
+  doctorPlugin,
+  FIRST_PARTY_ATOMS,
+  getInstalledPlugin,
+  getSnapshot,
+  installFromLocalFolder,
+  installPlugin,
+  isDiffReviewSurfaceId,
+  listInstalledPlugins,
+  listIterationsForRun,
+  MissingInputError,
+  pluginPromptBlock,
+  pruneExpiredSnapshots,
+  readPluginLockfile,
+  registerBuiltInAtomWorkers,
+  registerBundledPlugins,
+  registryRootsForDataDir,
+  resolvePluginSnapshot,
+  runPipelineForRun,
+  runStageWithRegistry,
+  startSnapshotGc,
+  uninstallPlugin,
 } from './plugins/index.js';
 import {
   marketplaceManifestUrlForRegistry,
