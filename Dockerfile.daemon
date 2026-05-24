@@ -18,6 +18,7 @@ COPY craft ./craft
 COPY design-systems ./design-systems
 COPY e2e ./e2e
 COPY packages ./packages
+COPY plugins ./plugins
 COPY prompt-templates ./prompt-templates
 COPY scripts ./scripts
 COPY skills ./skills
