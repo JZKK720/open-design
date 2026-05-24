@@ -69,11 +69,25 @@ export function resolveContext(manifest: PluginManifest, opts: ResolveOptions): 
   if (ctx) {
     // Skills
     for (const ref of ctx.skills ?? []) {
-      const id = (ref.ref ?? ref.path ?? '').trim();
-      if (!id) continue;
-      const skill = registry.skills.find((s) => s.id === id || s.id === stripDotSlash(id));
+      const explicitRef = typeof ref.ref === 'string' ? ref.ref.trim() : '';
+      if (explicitRef) {
+        const skill = registry.skills.find((s) => s.id === explicitRef || s.id === stripDotSlash(explicitRef));
+        if (!skill) {
+          if (opts.warnOnMissing) warnings.push(`Unknown skill ref: '${explicitRef}'`);
+          continue;
+        }
+        items.push({ kind: 'skill', id: skill.id, label: skill.title ?? skill.id });
+        digestRefs.push({ kind: 'skill', ref: skill.id });
+        continue;
+      }
+
+      const pathRef = typeof ref.path === 'string' ? ref.path.trim() : '';
+      if (!pathRef) continue;
+      if (isPluginLocalSkillPath(pathRef)) continue;
+
+      const skill = registry.skills.find((s) => s.id === pathRef || s.id === stripDotSlash(pathRef));
       if (!skill) {
-        if (opts.warnOnMissing) warnings.push(`Unknown skill ref: '${id}'`);
+        if (opts.warnOnMissing) warnings.push(`Unknown skill ref: '${pathRef}'`);
         continue;
       }
       items.push({ kind: 'skill', id: skill.id, label: skill.title ?? skill.id });
@@ -174,4 +188,8 @@ export function resolveContext(manifest: PluginManifest, opts: ResolveOptions): 
 
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
+}
+
+function isPluginLocalSkillPath(value: string): boolean {
+  return value.startsWith('./') || value.startsWith('../') || value.includes('/');
 }
