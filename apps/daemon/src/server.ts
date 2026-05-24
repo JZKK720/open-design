@@ -2432,6 +2432,20 @@ function isLoopbackPeerAddress(address) {
   return false;
 }
 
+export function isOpenDaemonApiProbePath(pathname) {
+  switch (String(pathname || '').trim()) {
+    case '/health':
+    case '/version':
+    case '/daemon/status':
+    case '/api/health':
+    case '/api/version':
+    case '/api/daemon/status':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function localOriginFromHeader(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -3427,9 +3441,8 @@ export async function startServer({
   // value matching `OD_API_TOKEN`. Health / version / status remain
   // open so monitoring probes don't need the token.
   if (apiToken.length > 0) {
-    const openProbePaths = new Set(['/api/health', '/api/version', '/api/daemon/status']);
     app.use('/api', (req, res, next) => {
-      if (openProbePaths.has(req.path)) return next();
+      if (isOpenDaemonApiProbePath(req.path)) return next();
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
       // header here because a reverse proxy MUST always forward the
       // bearer; the loopback bypass exists for the localhost desktop

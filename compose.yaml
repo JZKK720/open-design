@@ -9,6 +9,7 @@ services:
     pull_policy: always
     environment:
       OD_BIND_HOST: 0.0.0.0
+      OD_API_TOKEN: ${OD_API_TOKEN:?Set OD_API_TOKEN in your .env or shell}
       OD_DATA_DIR: /data
       OD_PORT: 7456
       OD_WEB_PORT: ${OD_WEB_PORT:-7831}
@@ -32,9 +33,17 @@ services:
     pull_policy: always
     depends_on:
       - open-design-daemon
+    environment:
+      OD_API_TOKEN: ${OD_API_TOKEN:?Set OD_API_TOKEN in your .env or shell}
+    command:
+      - /bin/sh
+      - -c
+      - envsubst '$$OD_API_TOKEN' < /opt/open-design/nginx/open-design.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
     ports:
       - "7831:80"
     restart: unless-stopped
+    volumes:
+      - ./docker/nginx/open-design.conf.template:/opt/open-design/nginx/open-design.conf.template:ro
 
 volumes:
   open-design-data:
