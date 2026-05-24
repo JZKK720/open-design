@@ -9,7 +9,11 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
   const { PROJECT_ROOT, PROJECTS_DIR, RUNTIME_DATA_DIR } = ctx.paths;
   const { randomUUID } = ctx.ids;
   const { MEDIA_PROVIDERS, IMAGE_MODELS, VIDEO_MODELS, AUDIO_MODELS_BY_KIND, MEDIA_ASPECTS, VIDEO_LENGTHS_SEC, AUDIO_DURATIONS_SEC, readMaskedConfig, writeConfig, generateMedia, createMediaTask, persistMediaTask, appendTaskProgress, notifyTaskWaiters, getLiveMediaTask, mediaTaskSnapshot, listMediaTasksByProject, listElevenLabsVoiceOptions } = ctx.media;
-  const { readAppConfig, writeAppConfig } = ctx.appConfig;
+  const {
+    readAppConfig,
+    readAppConfigBootstrapFromEnv,
+    writeAppConfig,
+  } = ctx.appConfig;
   const { orbitService } = ctx.orbit;
   const { openNativeFolderDialog } = ctx.nativeDialogs;
   const { getProject } = ctx.projectStore;
@@ -74,7 +78,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
     try {
       const config = await readAppConfig(RUNTIME_DATA_DIR);
-      res.json({ config });
+      res.json({ config, bootstrap: readAppConfigBootstrapFromEnv() });
     } catch (err: any) {
       res
         .status(500)

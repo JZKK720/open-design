@@ -183,6 +183,23 @@ describe('mergeDaemonConfig', () => {
     expect(merged.agentCliEnv).toEqual({});
   });
 
+  it('adopts an Ollama bootstrap when local config is still at defaults', () => {
+    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
+      config: {},
+      bootstrap: {
+        mode: 'api',
+        apiProtocol: 'ollama',
+        baseUrl: 'http://host.docker.internal:11434',
+        model: 'qwen3.6:35b-a3b-q8_0',
+      },
+    });
+
+    expect(merged.mode).toBe('api');
+    expect(merged.apiProtocol).toBe('ollama');
+    expect(merged.baseUrl).toBe('http://host.docker.internal:11434');
+    expect(merged.model).toBe('qwen3.6:35b-a3b-q8_0');
+  });
+
   it('uses daemon CLI env prefs instead of merging with stale local entries', () => {
     const merged = mergeDaemonConfig(
       {

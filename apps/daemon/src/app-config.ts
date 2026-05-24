@@ -15,6 +15,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import type { ApiProtocol, AppConfigBootstrap } from '@open-design/contracts';
 
 import {
   readInstallationFile,
@@ -64,6 +65,54 @@ export function readPluginEnvKnobs(): PluginEnvKnobs {
     snapshotRetentionDays:       nullableIntFromEnv('OD_SNAPSHOT_RETENTION_DAYS'),
     snapshotGcIntervalMs:        intFromEnv('OD_SNAPSHOT_GC_INTERVAL_MS', 6 * 60 * 60 * 1000),
   };
+}
+
+function cleanEnvString(value: string | undefined): string | undefined {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+const BOOTSTRAP_PROTOCOLS: ReadonlySet<ApiProtocol> = new Set([
+  'anthropic',
+  'openai',
+  'azure',
+  'google',
+  'ollama',
+  'senseaudio',
+] as const);
+
+export function readAppConfigBootstrapFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): AppConfigBootstrap {
+  const defaults: AppConfigBootstrap = {};
+
+  const mode = cleanEnvString(env.OD_DEFAULT_MODE);
+  if (mode === 'daemon' || mode === 'api') {
+    defaults.mode = mode;
+  }
+
+  const baseUrl = cleanEnvString(env.OD_DEFAULT_API_BASE_URL);
+  if (baseUrl) {
+    defaults.baseUrl = baseUrl;
+    defaults.apiProviderBaseUrl = null;
+  }
+
+  const model = cleanEnvString(env.OD_DEFAULT_API_MODEL);
+  if (model) {
+    defaults.model = model;
+  }
+
+  const apiProtocol = cleanEnvString(env.OD_DEFAULT_API_PROTOCOL);
+  if (apiProtocol && BOOTSTRAP_PROTOCOLS.has(apiProtocol as ApiProtocol)) {
+    defaults.apiProtocol = apiProtocol as ApiProtocol;
+  }
+
+  const apiProviderBaseUrl = cleanEnvString(env.OD_DEFAULT_API_PROVIDER_BASE_URL);
+  if (apiProviderBaseUrl) {
+    defaults.apiProviderBaseUrl = apiProviderBaseUrl;
+  }
+
+  return defaults;
 }
 
 export interface AgentModelPrefs {

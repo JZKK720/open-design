@@ -281,7 +281,13 @@ import {
   readAllTokens,
   setToken,
 } from './mcp-tokens.js';
-import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
+import {
+  agentCliEnvForAgent,
+  readAppConfig,
+  readAppConfigBootstrapFromEnv,
+  readPluginEnvKnobs,
+  writeAppConfig,
+} from './app-config.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -848,44 +854,6 @@ function cleanString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function readEnvString(name) {
-  const value = cleanString(process.env[name]);
-  return value || undefined;
-}
-
-function readAppConfigDefaultsFromEnv() {
-  const defaults = {};
-
-  const mode = readEnvString('OD_DEFAULT_MODE');
-  if (mode === 'daemon' || mode === 'api') {
-    defaults.mode = mode;
-  }
-
-  const baseUrl = readEnvString('OD_DEFAULT_API_BASE_URL');
-  if (baseUrl) {
-    defaults.baseUrl = baseUrl;
-    defaults.apiProviderBaseUrl = null;
-  }
-
-  const model = readEnvString('OD_DEFAULT_API_MODEL');
-  if (model) {
-    defaults.model = model;
-  }
-
-  const apiProtocol = readEnvString('OD_DEFAULT_API_PROTOCOL');
-  if (apiProtocol === 'anthropic' || apiProtocol === 'openai') {
-    defaults.apiProtocol = apiProtocol;
-  }
-
-  const apiProviderBaseUrl = readEnvString('OD_DEFAULT_API_PROVIDER_BASE_URL');
-  if (apiProviderBaseUrl) {
-    defaults.apiProviderBaseUrl = apiProviderBaseUrl;
-  }
-
-  return defaults;
-}
-
-const APP_CONFIG_ENV_DEFAULTS = readAppConfigDefaultsFromEnv();
 function normalizeVisualMarkKind(value) {
   return value === 'click' || value === 'click+stroke' || value === 'stroke'
     ? value
@@ -5109,7 +5077,11 @@ export async function startServer({
     listMediaTasksByProject,
     listElevenLabsVoiceOptions,
   };
-  const appConfigDeps = { readAppConfig, writeAppConfig };
+  const appConfigDeps = {
+    readAppConfig,
+    readAppConfigBootstrapFromEnv,
+    writeAppConfig,
+  };
   const orbitDeps = { orbitService };
   const nativeDialogDeps = { openNativeFolderDialog };
   const researchDeps = { searchResearch, ResearchError };
@@ -9080,35 +9052,6 @@ export async function startServer({
       const status = typeof err?.status === 'number' ? err.status : 400;
       res
         .status(status)
-        .json({ error: String(err && err.message ? err.message : err) });
-    }
-  });
-
-  app.get('/api/app-config', async (req, res) => {
-    if (!isLocalSameOrigin(req, resolvedPort)) {
-      return res.status(403).json({ error: 'cross-origin request rejected' });
-    }
-    try {
-      const config = await readAppConfig(RUNTIME_DATA_DIR);
-      res.json({ config, bootstrap: APP_CONFIG_ENV_DEFAULTS });
-    } catch (err) {
-      res
-        .status(500)
-        .json({ error: String(err && err.message ? err.message : err) });
-    }
-  });
-
-  app.put('/api/app-config', async (req, res) => {
-    if (!isLocalSameOrigin(req, resolvedPort)) {
-      return res.status(403).json({ error: 'cross-origin request rejected' });
-    }
-    try {
-      const config = await writeAppConfig(RUNTIME_DATA_DIR, req.body);
-      orbitService.configure(config.orbit);
-      res.json({ config });
-    } catch (err) {
-      res
-        .status(500)
         .json({ error: String(err && err.message ? err.message : err) });
     }
   });

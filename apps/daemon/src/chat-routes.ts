@@ -54,7 +54,10 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   } = ctx.critique;
   const isDaemonShuttingDown = ctx.lifecycle?.isDaemonShuttingDown ?? (() => false);
   const allowBlankTrustedGatewayApiKey = (protocol: unknown, baseUrl: unknown) => {
-    if ((protocol !== 'anthropic' && protocol !== 'openai') || typeof baseUrl !== 'string') {
+    if (
+      (protocol !== 'anthropic' && protocol !== 'openai' && protocol !== 'ollama') ||
+      typeof baseUrl !== 'string'
+    ) {
       return false;
     }
     const validated = validateBaseUrl(baseUrl);
@@ -1086,11 +1089,17 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const proxyBody = req.body || {};
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
-    if (!apiKey || !model) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'apiKey and model are required');
+    const effectiveBaseUrl = baseUrl || 'https://ollama.com';
+    const allowBlankApiKey = allowBlankTrustedGatewayApiKey('ollama', effectiveBaseUrl);
+    if ((!apiKey && !allowBlankApiKey) || !model) {
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        allowBlankApiKey ? 'model is required' : 'apiKey and model are required',
+      );
     }
 
-    const effectiveBaseUrl = baseUrl || 'https://ollama.com';
     const validated = await validateExternalApiBaseUrl(effectiveBaseUrl);
     if (validated.error) {
       return sendApiError(
@@ -1120,7 +1129,10 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify(payload),
         redirect: 'error',
       });

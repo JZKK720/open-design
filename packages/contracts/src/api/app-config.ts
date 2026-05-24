@@ -5,7 +5,13 @@ export interface AgentModelPrefs {
 
 export type AppMode = 'daemon' | 'api';
 
-export type ApiProtocol = 'anthropic' | 'openai' | 'azure' | 'google';
+export type ApiProtocol =
+  | 'anthropic'
+  | 'openai'
+  | 'azure'
+  | 'google'
+  | 'ollama'
+  | 'senseaudio';
 
 export type AgentCliEnvPrefs = Record<string, Record<string, string>>;
 

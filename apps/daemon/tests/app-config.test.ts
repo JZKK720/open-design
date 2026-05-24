@@ -13,7 +13,11 @@ import {
   it,
 } from 'vitest';
 
-import { readAppConfig, writeAppConfig } from '../src/app-config.js';
+import {
+  readAppConfig,
+  readAppConfigBootstrapFromEnv,
+  writeAppConfig,
+} from '../src/app-config.js';
 import { isLocalSameOrigin } from '../src/origin-validation.js';
 
 // Default telemetry preference applied when an existing config has no
@@ -37,6 +41,37 @@ describe('app-config', () => {
 
   afterEach(async () => {
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  describe('readAppConfigBootstrapFromEnv', () => {
+    it('accepts Ollama bootstrap defaults from env', () => {
+      expect(
+        readAppConfigBootstrapFromEnv({
+          OD_DEFAULT_MODE: 'api',
+          OD_DEFAULT_API_PROTOCOL: 'ollama',
+          OD_DEFAULT_API_BASE_URL: 'http://host.docker.internal:11434',
+          OD_DEFAULT_API_MODEL: 'qwen3.6:35b-a3b-q8_0',
+        }),
+      ).toEqual({
+        mode: 'api',
+        apiProtocol: 'ollama',
+        baseUrl: 'http://host.docker.internal:11434',
+        model: 'qwen3.6:35b-a3b-q8_0',
+        apiProviderBaseUrl: null,
+      });
+    });
+
+    it('ignores unknown bootstrap protocols', () => {
+      expect(
+        readAppConfigBootstrapFromEnv({
+          OD_DEFAULT_API_PROTOCOL: 'not-a-provider',
+          OD_DEFAULT_API_BASE_URL: 'http://host.docker.internal:11434',
+        }),
+      ).toEqual({
+        baseUrl: 'http://host.docker.internal:11434',
+        apiProviderBaseUrl: null,
+      });
+    });
   });
 
   describe('readAppConfig', () => {
@@ -146,7 +181,10 @@ describe('app-config', () => {
       );
 
       const cfg = await readAppConfig(dataDir);
-      expect(cfg).toEqual({ onboardingCompleted: true });
+      expect(cfg).toEqual({
+        onboardingCompleted: true,
+        telemetry: DEFAULT_TELEMETRY,
+      });
     });
 
     it('preserves omitted orbit.templateSkillId from legacy stored config', async () => {
