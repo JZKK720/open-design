@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=./docs/schemas/compose-spec.json
 name: open-design
 
 services:
