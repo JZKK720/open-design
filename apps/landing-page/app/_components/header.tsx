@@ -83,10 +83,11 @@ export function Header({
     <header className='nav' data-od-id='nav'>
       <div className='container nav-inner'>
         <a href={homeBrandHref} className='brand'>
-          <span className='brand-mark'>
-            <img src='/logo.webp' alt='' width={44} height={44} />
+          <span className='brand-mark'>Ø</span>
+          <span className='brand-name'>CubeCloud Open Design</span>
+          <span className='brand-meta'>
+            <b>Studio Nº 01</b>Berlin / Open / Earth
           </span>
-          <span className='brand-name'>Open Design</span>
         </a>
         {/*
           Mobile / tablet hamburger. Hidden by CSS at ≥1100px (the desktop

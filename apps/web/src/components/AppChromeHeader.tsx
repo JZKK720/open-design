@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { useT } from '../i18n';
 import { Icon } from './Icon';
 
+const APP_BRAND_NAME = 'CubeCloud Open Design';
+
 interface Props {
   actions?: ReactNode;
   children?: ReactNode;
@@ -25,6 +27,12 @@ export function AppChromeHeader({
   return (
     <header className="app-chrome-header">
       {showTrafficSpace ? <div className="app-chrome-traffic-space" aria-hidden /> : null}
+      <div className="app-chrome-brand" aria-label={APP_BRAND_NAME}>
+        <span className="app-chrome-mark" aria-hidden>
+          <img src="/cubecloud-app-icon.svg" alt="" className="brand-mark-img" draggable={false} />
+        </span>
+        <span className="app-chrome-name">{APP_BRAND_NAME}</span>
+      </div>
       {onBack ? (
         <button
           type="button"

@@ -6,10 +6,14 @@ import '../src/index.css';
 import '../src/styles/home/index.css';
 
 export const metadata: Metadata = {
-  title: 'Open Design',
+  title: 'CubeCloud Open Design',
   icons: {
-    icon: '/app-icon.png',
-    apple: '/app-icon.png',
+    icon: '/cubecloud-app-icon.svg',
+    apple: '/cubecloud-app-icon.svg',
+    // Safari pinned-tab mask icon — Next.js's Metadata API doesn't have a
+    // dedicated `mask` field, so we surface it via the generic `other`
+    // bucket which renders as a raw <link rel="mask-icon" ...>.
+    other: [{ rel: 'mask-icon', url: '/cubecloud-app-icon.svg', color: '#3277F6' }],
   },
 };
 

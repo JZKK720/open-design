@@ -26,7 +26,15 @@ const locale: LandingLocaleCode = localeFromPath(Astro.url.pathname);
 const localeDef = getLocaleDefinition(locale);
 const counts = await getCatalogCounts();
 const github = await getGithubRepoMeta();
-const { title, description } = getHomeSeo(locale, counts);
+const seo = getHomeSeo(locale, counts);
+const title =
+  locale === 'en'
+    ? 'CubeCloud Open Design — Design with the agent already on your laptop.'
+    : seo.title;
+const description =
+  locale === 'en'
+    ? 'The open-source alternative to Claude Design. Your existing coding agent — Claude · Codex · Cursor · Gemini · OpenCode · Qwen — becomes the design engine, driven by 31 composable skills and 72 brand-grade design systems.'
+    : seo.description;
 const canonical = new URL(localePath(locale), Astro.site).toString();
 const origin = Astro.site?.toString() ?? 'https://open-design.ai/';
 const logoUrl = new URL('/android-chrome-512x512.png', Astro.site).toString();
@@ -167,7 +175,7 @@ const pageHtml = renderToStaticMarkup(
     />
 
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Open Design" />
+    <meta property="og:site_name" content="CubeCloud Open Design" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />

@@ -2,6 +2,17 @@
 
 This file is the single source of truth for agents entering this repository. Read this file first; after entering `apps/`, `packages/`, `tools/`, or `e2e/`, read that layer's `AGENTS.md` for module-level details. Do not copy module details back into the root file; root stays focused on cross-repository boundaries, workflow, and commands.
 
+## Fork quick reference
+
+| Surface | Source of truth | Why this matters |
+| --- | --- | --- |
+| Fork GHCR default lane | `compose.yaml` | Repo-local container runtime should consume fork GHCR `latest` by default unless local rebuild is explicitly requested. |
+| Fork GHCR pinned lane | `compose.ghcr.yaml` + `.env.ghcr` | Long-lived downstream installs should pin a validated fork release tag. |
+| GHCR publishing lane | `.github/workflows/publish-ghcr.yml` | Validated `fork/main` runtime changes refresh fork `latest`, branch, and `sha-*` tags. |
+| Fork sync policy | `.github/instructions/cubecloud-fork-sync.instructions.md` | Keep `fork/main` authoritative for CubeCloud overlays and use owner-reviewed cherry-picks from `upstream/main`. |
+| GHCR distribution policy | `.github/instructions/ghcr-distribution.instructions.md` | Keeps lane selection, owner/image defaults, and no-local-rebuild-by-default policy consistent. |
+| Branding overlays | `assets/cubecloud-logos/` + `.github/instructions/cubecloud-branding.instructions.md` | Ensures web, landing-page, and desktop branding updates stay aligned with fork assets and naming. |
+
 ## Core documentation index
 
 - Product and onboarding: `README.md`, `README.zh-CN.md`, `QUICKSTART.md`.
@@ -10,7 +21,7 @@ This file is the single source of truth for agents entering this repository. Rea
 - Architecture and protocols: `docs/spec.md`, `docs/architecture.md`, `docs/skills-protocol.md`, `docs/agent-adapters.md`, `docs/modes.md`.
 - Roadmap and references: `docs/roadmap.md`, `docs/references.md`, `docs/code-review-guidelines.md`, `specs/current/maintainability-roadmap.md`.
 - Directory-level agent guidance: `apps/AGENTS.md`, `packages/AGENTS.md`, `tools/AGENTS.md`, `e2e/AGENTS.md`.
-- Workspace customization guidance: `.github/instructions/cubecloud-fork-sync.instructions.md`, `.github/instructions/ghcr-distribution.instructions.md`, `.github/instructions/open-design-container-runtime-diagnostics.instructions.md`.
+- Workspace customization guidance: `.github/instructions/cubecloud-fork-sync.instructions.md`, `.github/instructions/ghcr-distribution.instructions.md`, `.github/instructions/cubecloud-branding.instructions.md`, `.github/instructions/open-design-container-runtime-diagnostics.instructions.md`.
 - Packaged auto-update architecture and high-confidence local harness: read `tools/pack/AGENTS.md` section "Packaged auto-update architecture and harness" before touching packaged updater code, release-channel identity, installer behavior, or updater UI.
 
 ## Workspace directories

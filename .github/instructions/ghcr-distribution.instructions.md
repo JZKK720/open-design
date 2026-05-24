@@ -18,6 +18,38 @@ applyTo:
 
 # GHCR Distribution Guidance
 
+## Quick start (fork GHCR first)
+
+Use this sequence unless the user explicitly asks for a different lane:
+
+1. Choose the lane before editing or running commands:
+  - repo-local default lane: `compose.yaml` (fork GHCR `latest`)
+  - downstream pinned lane: `compose.ghcr.yaml` + `.env.ghcr` (validated fork release tag)
+2. Keep fork image coordinates aligned:
+  - `OPEN_DESIGN_IMAGE_OWNER` should match the publishing fork owner
+  - `OPEN_DESIGN_IMAGE_REPOSITORY` should match the fork package basename
+3. Prefer pull + restart for downstream updates:
+  - `docker compose pull`
+  - `docker compose up -d`
+4. Do not use local source rebuild (`--build`) as the default update lane.
+5. Use upstream GHCR only when required runtime behavior already exists upstream and no fork-only image content is needed.
+
+## Minimal publish/update checklist (no local rebuild)
+
+Use this when codebase branding or runtime changes must appear in live containers:
+
+1. Ensure the change is on `fork/main` and touches publish-relevant files (app/runtime source, not docs-only).
+2. Confirm `.github/workflows/publish-ghcr.yml` completes successfully after that commit.
+3. On the deployment host, keep fork image coordinates in `.env.ghcr` (`OPEN_DESIGN_IMAGE_OWNER`, `OPEN_DESIGN_IMAGE_REPOSITORY`, `OPEN_DESIGN_IMAGE_TAG`).
+4. Refresh from registry without local build:
+  - `docker compose --env-file .env.ghcr -f compose.ghcr.yaml pull`
+  - `docker compose --env-file .env.ghcr -f compose.ghcr.yaml up -d`
+5. Verify running images and UI labels after refresh (`docker compose ps`, `docker inspect`, open web UI).
+
+Important:
+- This flow does not require local `docker compose build`.
+- It does require a fork GHCR image refresh (publish workflow) for code changes to appear in containers.
+
 - Classify the active lane before changing anything:
   - default fork GHCR lane: `compose.yaml`
   - env-file GHCR lane: `compose.ghcr.yaml` plus `.env.ghcr`

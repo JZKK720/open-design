@@ -1280,10 +1280,8 @@ export default function Page({
             <div className='foot-grid'>
               <div className='foot-brand'>
                 <a href='#top' className='brand'>
-                  <span className='brand-mark'>
-                    <img src='/logo.webp' alt='' width={44} height={44} />
-                  </span>
-                  <span className='brand-name'>Open Design</span>
+                  <span className='brand-mark'>Ø</span>
+                  <span className='brand-name'>CubeCloud Open Design</span>
                 </a>
                 <p style={{ marginTop: 18 }}>
                   {home.footer.summary}

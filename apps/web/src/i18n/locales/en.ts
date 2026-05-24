@@ -58,14 +58,15 @@ export const en: Dict = {
   'plugins.availableDetails.permissions': 'Permissions',
   'plugins.availableDetails.capabilitySummary': 'Capability summary',
 
-  'app.brand': 'Open Design',
+  'app.brand': 'CubeCloud Open Design',
   'app.brandPill': 'Research Preview',
-  'app.brandSubtitle': 'by Nexu Labs',
+  'app.brandSubtitle': 'CubeCloud fork',
   'app.welcomeLoading': 'Loading workspace…',
 
-  'settings.welcomeKicker': "",
-  'settings.welcomeTitle': "Welcome",
-  'settings.welcomeSubtitle': "",
+  'settings.welcomeKicker': 'Welcome',
+  'settings.welcomeTitle': 'Set up CubeCloud Open Design',
+  'settings.welcomeSubtitle':
+    "Pick how you'd like to run generations. You can change this any time from the Settings button in the top bar.",
   'settings.onboardingCreateTitle': 'Start from a brief',
   'settings.onboardingCreateBody':
     'Describe the site, app, deck, image, or video you want. Open Design will create a project and keep the work editable.',
