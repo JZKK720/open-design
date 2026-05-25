@@ -1113,6 +1113,24 @@ export async function fetchSkillExample(
   }
 }
 
+async function isMissingPluginHtmlAsset(resp: Response): Promise<boolean> {
+  if (resp.status !== 404) return false;
+  const raw = await resp.clone().text().catch(() => '');
+  if (!raw) return false;
+
+  const contentType = resp.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    try {
+      const payload = JSON.parse(raw) as { error?: unknown };
+      return payload.error === 'preview not found';
+    } catch {
+      return false;
+    }
+  }
+
+  return raw.trim() === 'preview not found';
+}
+
 export async function fetchDeployConfig(
   providerId?: WebDeployProviderId,
 ): Promise<WebDeployConfigResponse | null> {
@@ -1844,15 +1862,14 @@ export async function fetchDesignSystemShowcase(id: string): Promise<string | nu
 
 // Fetch the sandboxed HTML preview the daemon serves for a plugin.
 // Mirrors fetchSkillExample's discriminated result so the modal can
-// surface a Retry button instead of staying stuck at "Loading…" when
-// a plugin ships no preview entry or the asset is missing on disk.
+// surface a Retry button for real fetch failures instead of staying
+// stuck at "Loading…", while treating missing shipped preview assets
+// as an unavailable placeholder.
 //
-// 404 is mapped to `unavailable` (mirroring the skill helper's #897
-// behavior) because the daemon returns 404 when the manifest's
-// `preview.entry` points at a file that doesn't ship — a missing
-// asset for an otherwise valid plugin is not an error the user can
-// retry their way out of. Surfacing the calm "no shipped preview"
-// placeholder is the truthful UX.
+// Only the daemon's `preview not found` 404 is mapped to `unavailable`
+// (mirroring the skill helper's #897 behavior). Stale plugin ids still
+// surface as real 404 errors so the UI does not mask a broken plugin
+// reference as a harmless missing preview.
 export async function fetchPluginPreviewHtml(
   id: string,
 ): Promise<SkillExampleResult> {
@@ -1861,7 +1878,9 @@ export async function fetchPluginPreviewHtml(
       `/api/plugins/${encodeURIComponent(id)}/preview`,
     );
     if (!resp.ok) {
-      if (resp.status === 404) return { unavailable: true, kind: 'html' };
+      if (await isMissingPluginHtmlAsset(resp)) {
+        return { unavailable: true, kind: 'html' };
+      }
       return { error: `HTTP ${resp.status}` };
     }
     return { html: await resp.text() };
@@ -1872,8 +1891,9 @@ export async function fetchPluginPreviewHtml(
 }
 
 // Fetch a single example output by stem (matches the basename of the
-// `od.useCase.exampleOutputs[].path` minus its extension). 404 is
-// mapped to `unavailable` for the same reason as fetchPluginPreviewHtml.
+// `od.useCase.exampleOutputs[].path` minus its extension). Missing
+// shipped example HTML maps to `unavailable`, but unknown plugin ids
+// remain real 404 errors for the same reason as fetchPluginPreviewHtml.
 export async function fetchPluginExampleHtml(
   pluginId: string,
   stem: string,
@@ -1883,7 +1903,9 @@ export async function fetchPluginExampleHtml(
       `/api/plugins/${encodeURIComponent(pluginId)}/example/${encodeURIComponent(stem)}`,
     );
     if (!resp.ok) {
-      if (resp.status === 404) return { unavailable: true, kind: 'html' };
+      if (await isMissingPluginHtmlAsset(resp)) {
+        return { unavailable: true, kind: 'html' };
+      }
       return { error: `HTTP ${resp.status}` };
     }
     return { html: await resp.text() };

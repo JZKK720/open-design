@@ -155,6 +155,20 @@ describe('fetchPluginPreviewHtml', () => {
     );
   });
 
+  it('keeps stale plugin ids as real 404 errors', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'plugin not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fetchPluginPreviewHtml('missing-plugin'),
+    ).resolves.toEqual({ error: 'HTTP 404' });
+  });
+
   it('forwards real preview fetch failures as discriminated errors', async () => {
     const fetchMock = vi.fn(
       async () => new Response('server error', { status: 500 }),
@@ -187,7 +201,7 @@ describe('fetchPluginExampleHtml', () => {
 
   it('treats missing example stems as unavailable instead of an error', async () => {
     const fetchMock = vi.fn(
-      async () => new Response('example not found', { status: 404 }),
+      async () => new Response('preview not found', { status: 404 }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -197,6 +211,20 @@ describe('fetchPluginExampleHtml', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/plugins/example-live-artifact/example/index',
     );
+  });
+
+  it('keeps stale plugin ids as real 404 errors', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'plugin not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      fetchPluginExampleHtml('missing-plugin', 'index'),
+    ).resolves.toEqual({ error: 'HTTP 404' });
   });
 
   it('forwards real example fetch failures as discriminated errors', async () => {
