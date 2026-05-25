@@ -294,11 +294,17 @@ export interface PetConfig {
   custom: PetCustom;
 }
 
+export type ExecutionConfigSource = 'bootstrap' | 'custom';
+
 export interface AppConfig {
   mode: ExecMode;
   apiKey: string;
   baseUrl: string;
   model: string;
+  // Distinguishes daemon-provided bootstrap defaults from explicit user
+  // overrides saved in the browser. This lets newer daemon bootstrap pins
+  // replace older bootstrap snapshots without clobbering real user choices.
+  executionConfigSource?: ExecutionConfigSource;
   apiProtocol?: ApiProtocol;
   apiVersion?: string;
   /** SenseAudio BYOK only — default image model for the daemon-side

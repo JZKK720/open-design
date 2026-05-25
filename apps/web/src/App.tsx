@@ -129,17 +129,43 @@ export async function persistComposioConfigChange(
 }
 
 export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppConfig {
+  const persisted = markCustomExecutionConfig(next, current);
   return {
-    ...next,
+    ...persisted,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
-    composio: next.composio
+    composio: persisted.composio
       ? {
           apiKey: '',
-          apiKeyConfigured: Boolean(next.composio.apiKeyConfigured),
-          apiKeyTail: next.composio.apiKeyTail ?? '',
+          apiKeyConfigured: Boolean(persisted.composio.apiKeyConfigured),
+          apiKeyTail: persisted.composio.apiKeyTail ?? '',
         }
-      : next.composio,
+      : persisted.composio,
   };
+}
+
+function executionConfigSnapshot(config: AppConfig) {
+  return {
+    mode: config.mode,
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    apiProtocol: config.apiProtocol,
+    apiVersion: config.apiVersion,
+    byokImageModel: config.byokImageModel,
+    apiProviderBaseUrl: config.apiProviderBaseUrl ?? null,
+    apiProtocolConfigs: config.apiProtocolConfigs ?? {},
+    maxTokens: config.maxTokens,
+  };
+}
+
+export function markCustomExecutionConfig(next: AppConfig, current: AppConfig): AppConfig {
+  if (
+    JSON.stringify(executionConfigSnapshot(next))
+    === JSON.stringify(executionConfigSnapshot(current))
+  ) {
+    return next;
+  }
+  return { ...next, executionConfigSource: 'custom' };
 }
 
 /**
@@ -752,7 +778,10 @@ export function App() {
   // user had previously configured for the target protocol.
   const handleApiProtocolChange = useCallback(
     (protocol: ApiProtocol) => {
-      const next = switchApiProtocolConfig(config, protocol);
+      const next = markCustomExecutionConfig(
+        switchApiProtocolConfig(config, protocol),
+        config,
+      );
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);
@@ -765,7 +794,10 @@ export function App() {
   // mid-session without retyping their key.
   const handleApiModelChange = useCallback(
     (model: string) => {
-      const next = updateCurrentApiProtocolConfig(config, { model });
+      const next = markCustomExecutionConfig(
+        updateCurrentApiProtocolConfig(config, { model }),
+        config,
+      );
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);

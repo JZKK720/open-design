@@ -198,6 +198,56 @@ describe('mergeDaemonConfig', () => {
     expect(merged.apiProtocol).toBe('ollama');
     expect(merged.baseUrl).toBe('http://host.docker.internal:11434');
     expect(merged.model).toBe('qwen3.6:35b-a3b-q8_0');
+    expect(merged.executionConfigSource).toBe('bootstrap');
+  });
+
+  it('replaces a legacy bootstrap snapshot when the daemon pin changes', () => {
+    const merged = mergeDaemonConfig(
+      {
+        ...DEFAULT_CONFIG,
+        mode: 'api',
+        apiProtocol: 'ollama',
+        baseUrl: 'http://host.docker.internal:11434',
+        model: 'gemma4:e2b-it-q4_K_M',
+      },
+      {
+        config: {},
+        bootstrap: {
+          mode: 'api',
+          apiProtocol: 'ollama',
+          baseUrl: 'http://host.docker.internal:11434',
+          model: 'qwen3.5:35b-a3b',
+        },
+      },
+    );
+
+    expect(merged.model).toBe('qwen3.5:35b-a3b');
+    expect(merged.executionConfigSource).toBe('bootstrap');
+  });
+
+  it('preserves an explicit custom execution override across bootstrap refreshes', () => {
+    const merged = mergeDaemonConfig(
+      {
+        ...DEFAULT_CONFIG,
+        mode: 'api',
+        apiProtocol: 'ollama',
+        baseUrl: 'http://host.docker.internal:11434',
+        model: 'gemma4:e2b-it-q4_K_M',
+        executionConfigSource: 'custom',
+      },
+      {
+        config: {},
+        bootstrap: {
+          mode: 'api',
+          apiProtocol: 'ollama',
+          baseUrl: 'http://host.docker.internal:11434',
+          model: 'qwen3.5:35b-a3b',
+        },
+      },
+    );
+
+    expect(merged.model).toBe('gemma4:e2b-it-q4_K_M');
+    expect(merged.executionConfigSource).toBe('custom');
   });
 
   it('uses daemon CLI env prefs instead of merging with stale local entries', () => {

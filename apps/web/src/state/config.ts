@@ -8,6 +8,7 @@ import { isOpenAICompatible } from '../providers/openai-compatible';
 import type {
   ApiProtocol,
   AppConfig,
+  ExecutionConfigSource,
   MediaProviderCredentials,
   NotificationsConfig,
   OrbitConfig,
@@ -355,13 +356,57 @@ function hasCustomApiConfig(config: AppConfig): boolean {
   );
 }
 
+function matchesBootstrapExecutionEnvelope(
+  config: AppConfig,
+  bootstrap: AppConfigBootstrap | undefined,
+): boolean {
+  if (!bootstrap) return false;
+  if (config.apiKey.trim()) return false;
+  if (bootstrap.mode !== undefined && config.mode !== bootstrap.mode) {
+    return false;
+  }
+  if (bootstrap.baseUrl !== undefined && config.baseUrl !== bootstrap.baseUrl) {
+    return false;
+  }
+  if (
+    bootstrap.apiProtocol !== undefined
+    && config.apiProtocol !== bootstrap.apiProtocol
+  ) {
+    return false;
+  }
+  if (
+    bootstrap.apiProviderBaseUrl !== undefined
+    && (config.apiProviderBaseUrl ?? null) !== (bootstrap.apiProviderBaseUrl ?? null)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function inferExecutionConfigSource(
+  config: AppConfig,
+  bootstrap: AppConfigBootstrap | undefined,
+): ExecutionConfigSource {
+  if (config.executionConfigSource === 'custom') return 'custom';
+  if (config.executionConfigSource === 'bootstrap') return 'bootstrap';
+  if (!hasCustomApiConfig(config)) return 'bootstrap';
+  return matchesBootstrapExecutionEnvelope(config, bootstrap)
+    ? 'bootstrap'
+    : 'custom';
+}
+
 function mergeDaemonBootstrap(
   config: AppConfig,
   bootstrap: AppConfigBootstrap | undefined,
 ): AppConfig {
-  if (!bootstrap || hasCustomApiConfig(config)) return config;
+  if (!bootstrap) return config;
 
-  const next: AppConfig = { ...config };
+  const executionConfigSource = inferExecutionConfigSource(config, bootstrap);
+  if (executionConfigSource === 'custom') {
+    return { ...config, executionConfigSource };
+  }
+
+  const next: AppConfig = { ...config, executionConfigSource };
   if (bootstrap.mode !== undefined) {
     next.mode = bootstrap.mode;
   }

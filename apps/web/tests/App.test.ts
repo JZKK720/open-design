@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildPersistedConfig,
   isAutosaveDraftOnlyChange,
+  markCustomExecutionConfig,
   persistComposioConfigChange,
   resolveSettingsCloseConfig,
   shouldSyncMediaProvidersOnSave,
@@ -67,6 +68,26 @@ describe('buildPersistedConfig', () => {
         { ...baseConfig, onboardingCompleted: true },
       ),
     ).toMatchObject({ onboardingCompleted: true });
+  });
+
+  it('marks an edited execution config as a custom browser override', () => {
+    expect(
+      buildPersistedConfig(
+        { ...baseConfig, model: 'qwen3.5:35b-a3b' },
+        baseConfig,
+      ),
+    ).toMatchObject({ executionConfigSource: 'custom' });
+  });
+});
+
+describe('markCustomExecutionConfig', () => {
+  it('preserves bootstrap-sourced configs when execution fields did not change', () => {
+    expect(
+      markCustomExecutionConfig(
+        { ...baseConfig, executionConfigSource: 'bootstrap' },
+        { ...baseConfig, executionConfigSource: 'bootstrap' },
+      ),
+    ).toMatchObject({ executionConfigSource: 'bootstrap' });
   });
 });
 

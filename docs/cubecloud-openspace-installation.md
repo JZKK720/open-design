@@ -19,7 +19,7 @@ For named Docker releases with versioned GHCR tags and GitHub release notes, use
 
 Release brief for the current named fork Docker release:
 
-- `docs/cubecloud-fork-release-0.4.0.md`
+- `docs/cubecloud-fork-release-0.4.2.md`
 
 That workflow is manual on purpose. It lets you enter a release version such as `0.2.1`, optionally add release notes, publish semver-tagged Docker images, and create a GitHub release named `Open Design Docker <version>`.
 
@@ -36,7 +36,7 @@ Fork sync and deployment policy:
 2. Use `origin/main` as the only deployment source of truth for CubeCloud runtime behavior, GHCR images, and release tags.
 3. Use two downstream lanes:
   - validation or staging machines may follow fork GHCR `latest`
-  - important, long-lived, or user-facing downstream machines should prefer the newest pinned fork release such as `0.4.0`
+  - important, long-lived, or user-facing downstream machines should prefer the newest pinned fork release such as `0.4.2`
 4. Land validated runtime changes on `fork/main` first so `.github/workflows/publish-ghcr.yml` refreshes fork `latest`, `main`, and `sha-*` tags.
 5. Run `.github/workflows/release-docker.yml` when you want a stable, reproducible snapshot for downstream environments in addition to the rolling `latest` lane.
 
@@ -82,7 +82,7 @@ pnpm typecheck
 git push origin main
 ```
 
-That push updates the fork GHCR publish lane automatically. Validation machines can stay on `.env.ghcr` plus `compose.ghcr.yaml` with `OPEN_DESIGN_IMAGE_TAG=latest`; important downstream machines can point the same files at the newest validated pinned release such as `OPEN_DESIGN_IMAGE_TAG=0.4.0`.
+That push updates the fork GHCR publish lane automatically. Validation machines can stay on `.env.ghcr` plus `compose.ghcr.yaml` with `OPEN_DESIGN_IMAGE_TAG=latest`; important downstream machines can point the same files at the newest validated pinned release such as `OPEN_DESIGN_IMAGE_TAG=0.4.2`.
 
 Example update flow:
 
