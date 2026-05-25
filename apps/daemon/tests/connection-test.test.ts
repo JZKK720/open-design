@@ -272,6 +272,45 @@ describe('POST /api/provider/models', () => {
     });
   });
 
+  it('lists local Ollama tags without requiring an API key', async () => {
+    const fetchMock = passThroughOrUpstream((url, init) => {
+      expect(url).toBe('http://localhost:11434/api/tags');
+      expect((init?.headers as Record<string, string> | undefined)?.authorization).toBeUndefined();
+      return jsonResponse({
+        models: [
+          { name: 'gpt-oss:20b' },
+          { name: 'gemma4:e2b-it-q4_K_M' },
+        ],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await realFetch(`${baseUrl}/api/provider/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        protocol: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        apiKey: '',
+      }),
+    });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      kind: 'success',
+      models: [
+        { id: 'gemma4:e2b-it-q4_K_M', label: 'gemma4:e2b-it-q4_K_M' },
+        { id: 'gpt-oss:20b', label: 'gpt-oss:20b' },
+      ],
+    });
+    expect(
+      fetchMock.mock.calls.some(
+        ([input]) => !String(input).startsWith(baseUrl),
+      ),
+    ).toBe(true);
+  });
+
   it('lets unsupported contract protocols return a classified provider-models result', async () => {
     const fetchMock = passThroughOrUpstream(() => jsonResponse({}));
     vi.stubGlobal('fetch', fetchMock);
@@ -280,9 +319,9 @@ describe('POST /api/provider/models', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        protocol: 'ollama',
-        baseUrl: 'https://ollama.com',
-        apiKey: 'ollama-key',
+        protocol: 'azure',
+        baseUrl: 'https://example.openai.azure.com',
+        apiKey: 'azure-key',
       }),
     });
     const body = (await res.json()) as Record<string, unknown>;

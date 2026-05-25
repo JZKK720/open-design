@@ -203,7 +203,7 @@ describe('SettingsDialog provider connection test requirements', () => {
 });
 
 describe('SettingsDialog provider model fetch helpers', () => {
-  it('requires key, valid base URL, and a supported protocol', () => {
+  it('requires key, valid base URL, and a discovery-capable protocol for remote providers', () => {
     expect(
       canFetchProviderModels(
         { apiKey: 'sk-openai', baseUrl: 'https://api.openai.com/v1' },
@@ -234,6 +234,15 @@ describe('SettingsDialog provider model fetch helpers', () => {
         'ollama',
       ),
     ).toBe(false);
+  });
+
+  it('allows local Ollama discovery without an API key', () => {
+    expect(
+      canFetchProviderModels(
+        { apiKey: '', baseUrl: 'http://host.docker.internal:11434' },
+        'ollama',
+      ),
+    ).toBe(true);
   });
 
   it('merges fetched provider models before static suggestions without duplicates', () => {

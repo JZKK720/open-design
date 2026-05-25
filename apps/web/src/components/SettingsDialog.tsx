@@ -75,6 +75,7 @@ import type {
 } from '../types';
 import { testAgent, testApiProvider } from '../providers/connection-test';
 import { isLocalApiBaseUrl } from '../utils/apiBaseUrl';
+import { apiProtocolLabel } from '../utils/apiProtocol';
 import { fetchProviderModels } from '../providers/provider-models';
 import {
   fetchConnectors,
@@ -291,10 +292,10 @@ export function canFetchProviderModels(
   config: Pick<AppConfig, 'apiKey' | 'baseUrl'>,
   protocol: ApiProtocol,
 ): boolean {
+  const requiresApiKey = providerModelDiscoveryRequiresApiKey(protocol, config.baseUrl);
   return (
-    protocol !== 'azure' &&
-    protocol !== 'ollama' &&
-    Boolean(config.apiKey.trim()) &&
+    supportsProviderModelDiscovery(protocol, config.baseUrl) &&
+    (!requiresApiKey || Boolean(config.apiKey.trim())) &&
     Boolean(config.baseUrl.trim()) &&
     isValidApiBaseUrl(config.baseUrl)
   );
@@ -314,9 +315,11 @@ function missingByokConnectionFields(
 
 function missingByokModelFetchFields(
   config: Pick<AppConfig, 'apiKey' | 'baseUrl'>,
+  options: { requiresApiKey?: boolean } = {},
 ): ByokRequiredField[] {
+  const requiresApiKey = options.requiresApiKey ?? true;
   const missing: ByokRequiredField[] = [];
-  if (!config.apiKey.trim()) missing.push('api_key');
+  if (requiresApiKey && !config.apiKey.trim()) missing.push('api_key');
   if (!config.baseUrl.trim()) missing.push('base_url');
   return missing;
 }
@@ -349,13 +352,41 @@ function providerConnectionTestKey(
 }
 
 function isLocalOllamaBaseUrl(baseUrl: string): boolean {
-  try {
-    const parsed = new URL(baseUrl);
-    const hostname = parsed.hostname.toLowerCase();
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-  } catch {
-    return false;
+  return isLocalApiBaseUrl(baseUrl);
+}
+
+function supportsProviderModelDiscovery(
+  protocol: ApiProtocol,
+  baseUrl: string,
+): boolean {
+  if (protocol === 'azure') return false;
+  if (protocol === 'ollama') return isLocalOllamaBaseUrl(baseUrl);
+  return true;
+}
+
+function providerModelDiscoveryRequiresApiKey(
+  protocol: ApiProtocol,
+  baseUrl: string,
+): boolean {
+  return !(protocol === 'ollama' && isLocalOllamaBaseUrl(baseUrl));
+}
+
+function matchesSelectedProvider(
+  provider: KnownProvider,
+  apiProviderBaseUrl: string | null,
+  baseUrl: string,
+): boolean {
+  if (apiProviderBaseUrl == null) return false;
+  if (provider.baseUrl === apiProviderBaseUrl && provider.baseUrl === baseUrl) {
+    return true;
   }
+  return (
+    provider.protocol === 'ollama' &&
+    provider.requiresApiKey === false &&
+    isLocalApiBaseUrl(provider.baseUrl) &&
+    isLocalApiBaseUrl(apiProviderBaseUrl) &&
+    isLocalApiBaseUrl(baseUrl)
+  );
 }
 
 function byokProviderRequiresApiKey(
@@ -861,11 +892,12 @@ export function SettingsDialog({
   const [providerModelsCommittedKey, setProviderModelsCommittedKey] =
     useState<string | null>(() => {
       const protocol = initial.apiProtocol ?? 'anthropic';
+      const discoverySupported = supportsProviderModelDiscovery(protocol, initial.baseUrl);
+      const requiresApiKey = providerModelDiscoveryRequiresApiKey(protocol, initial.baseUrl);
       if (
         initial.mode !== 'api' ||
-        protocol === 'azure' ||
-        protocol === 'ollama' ||
-        missingByokModelFetchFields(initial).length > 0 ||
+        !discoverySupported ||
+        missingByokModelFetchFields(initial, { requiresApiKey }).length > 0 ||
         !isValidApiBaseUrl(initial.baseUrl)
       ) {
         return null;
@@ -1302,16 +1334,21 @@ export function SettingsDialog({
       }
       return;
     }
-    if (apiProtocol === 'ollama') {
+    if (!providerModelDiscoverySupported) {
       if (!options.silent) {
         setByokPreconditionNotice({
           action: 'test',
-          message: t('settings.fetchModelsUnsupportedOllama'),
+          message:
+            apiProtocol === 'ollama'
+              ? t('settings.fetchModelsUnsupportedOllama')
+              : t('settings.fetchModelsUnsupported'),
         });
       }
       return;
     }
-    const missing = missingByokModelFetchFields(cfg);
+    const missing = missingByokModelFetchFields(cfg, {
+      requiresApiKey: providerModelsRequireApiKey,
+    });
     if (missing.length > 0) {
       if (!options.silent) {
         showByokPreconditionNotice('test', missing);
@@ -1715,15 +1752,15 @@ export function SettingsDialog({
   const selectedProviderIndex =
     cfg.apiProviderBaseUrl == null
       ? -1
-      : protocolProviders.findIndex(
-          (p) => p.baseUrl === cfg.apiProviderBaseUrl && p.baseUrl === cfg.baseUrl,
-        );
+      : protocolProviders.findIndex((p) => matchesSelectedProvider(p, cfg.apiProviderBaseUrl ?? null, cfg.baseUrl));
   const selectedProvider = selectedProviderIndex >= 0 ? protocolProviders[selectedProviderIndex] : undefined;
   const byokRequiresApiKey = byokProviderRequiresApiKey(
     apiProtocol,
     selectedProvider,
     cfg.baseUrl,
   );
+  const providerModelDiscoverySupported = supportsProviderModelDiscovery(apiProtocol, cfg.baseUrl);
+  const providerModelsRequireApiKey = providerModelDiscoveryRequiresApiKey(apiProtocol, cfg.baseUrl);
   const providerModelsKey = useMemo(
     () => providerModelsCacheKey(
       apiProtocol,
@@ -1735,7 +1772,13 @@ export function SettingsDialog({
   );
   const fetchedApiModelOptions = providerModelsCache[providerModelsKey] ?? [];
   const commitProviderModelsInputs = () => {
-    if (missingByokModelFetchFields(cfg).length > 0 || !baseUrlValid) {
+    if (
+      !providerModelDiscoverySupported ||
+      missingByokModelFetchFields(cfg, {
+        requiresApiKey: providerModelsRequireApiKey,
+      }).length > 0 ||
+      !baseUrlValid
+    ) {
       setProviderModelsCommittedKey(null);
       return;
     }
@@ -1743,8 +1786,12 @@ export function SettingsDialog({
   };
   useEffect(() => {
     if (cfg.mode !== 'api') return;
-    if (apiProtocol === 'azure' || apiProtocol === 'ollama') return;
-    if (missingByokModelFetchFields(cfg).length > 0) return;
+    if (!providerModelDiscoverySupported) return;
+    if (
+      missingByokModelFetchFields(cfg, {
+        requiresApiKey: providerModelsRequireApiKey,
+      }).length > 0
+    ) return;
     if (!baseUrlValid) return;
     if (providerModelsCommittedKey !== providerModelsKey) return;
     const timer = window.setTimeout(() => {
@@ -1758,6 +1805,8 @@ export function SettingsDialog({
     cfg.baseUrl,
     cfg.mode,
     cfg.apiVersion,
+    providerModelDiscoverySupported,
+    providerModelsRequireApiKey,
     providerModelsCommittedKey,
     providerModelsKey,
   ]);
@@ -1770,6 +1819,12 @@ export function SettingsDialog({
     currentProviderModelsResult?.ok && currentProviderModelsResult.models?.length
       ? currentProviderModelsResult.models.length
       : 0;
+  const providerModelsSuccessMessage =
+    loadedAccountModelCount > 0
+      ? apiProtocol === 'ollama' && isLocalOllamaBaseUrl(cfg.baseUrl)
+        ? t('settings.fetchModelsSuccess', { count: loadedAccountModelCount })
+        : t('settings.modelsLoadedFromAccount', { count: loadedAccountModelCount })
+      : null;
   const apiKeyAuthFailed =
     currentProviderModelsResult?.ok === false &&
     currentProviderModelsResult.kind === 'auth_failed';
@@ -1818,7 +1873,9 @@ export function SettingsDialog({
     apiProtocol === 'azure'
       ? t('settings.azureBaseUrlPlaceholder')
       : apiProtocol === 'ollama'
-        ? 'http://localhost:11434'
+        ? isLocalApiBaseUrl(cfg.baseUrl)
+          ? cfg.baseUrl
+          : 'http://localhost:11434'
         : undefined;
   const renderByokBaseUrlField = () => (
     <label className={'field' + (baseUrlReadOnly ? ' settings-base-url-readonly' : '')}>
@@ -2912,7 +2969,7 @@ export function SettingsDialog({
             <section className="settings-section settings-section-card settings-section-byok">
               <div className="section-head">
                 <div>
-                  <h3>{API_PROTOCOL_LABELS[apiProtocol]}</h3>
+                  <h3>{apiProtocolLabel(apiProtocol, cfg.baseUrl)}</h3>
                 </div>
               </div>
               {byokPreconditionNotice ? (
@@ -2943,11 +3000,17 @@ export function SettingsDialog({
                       const idx = Number(e.target.value);
                       if (!isNaN(idx) && protocolProviders[idx]) {
                         const p = protocolProviders[idx]!;
+                        const nextBaseUrl =
+                          p.protocol === 'ollama' &&
+                          p.requiresApiKey === false &&
+                          isLocalApiBaseUrl(cfg.baseUrl)
+                            ? cfg.baseUrl
+                            : p.baseUrl;
                         setApiModelCustomEditing(false);
                         updateApiConfig({
-                          baseUrl: p.baseUrl,
+                          baseUrl: nextBaseUrl,
                           model: p.model,
-                          apiProviderBaseUrl: p.baseUrl,
+                          apiProviderBaseUrl: nextBaseUrl,
                         });
                       }
                     }}
@@ -3127,9 +3190,7 @@ export function SettingsDialog({
                 </select>
                 {loadedAccountModelCount > 0 ? (
                   <span className="field-inline-status success" role="status">
-                    {t('settings.modelsLoadedFromAccount', {
-                      count: loadedAccountModelCount,
-                    })}
+                    {providerModelsSuccessMessage}
                   </span>
                 ) : null}
                 {providerModelsFailureMessage ? (
@@ -3144,7 +3205,7 @@ export function SettingsDialog({
               {apiProtocol === 'azure' ? (
                 <p className="hint">{t('settings.azureModelFetchHint')}</p>
               ) : null}
-              {apiProtocol === 'ollama' ? (
+              {apiProtocol === 'ollama' && !providerModelDiscoverySupported ? (
                 <p className="hint">{t('settings.fetchModelsUnsupported')}</p>
               ) : null}
               {apiModelCustomActive ? (

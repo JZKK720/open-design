@@ -458,7 +458,7 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
   it('offers managed and self-hosted Ollama presets with editable base URLs', () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
     const providerSelect = screen.getByLabelText('Quick fill provider') as HTMLSelectElement;
     expect(providerSelect.options[0]?.textContent).toBe('Custom provider');
     expect(providerSelect.options[1]?.textContent).toBe('Ollama Cloud (managed)');
@@ -504,7 +504,7 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { onPersist } = renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
     fireEvent.change(screen.getByLabelText('Quick fill provider'), {
       target: { value: '1' },
     });
@@ -530,6 +530,27 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       ([input]) => input.toString() === '/api/test/connection',
     );
     expect(testConnectionCalls).toHaveLength(1);
+  });
+
+  it('treats host.docker.internal Ollama as the local self-hosted preset', () => {
+    renderSettingsDialog({
+      apiProtocol: 'ollama',
+      apiKey: '',
+      baseUrl: 'http://host.docker.internal:11434',
+      model: 'gemma4:e2b-it-q4_K_M',
+      apiProviderBaseUrl: 'http://host.docker.internal:11434',
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
+
+    const providerSelect = screen.getByLabelText('Quick fill provider') as HTMLSelectElement;
+    expect(providerSelect.value).toBe('1');
+    expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(
+      'http://host.docker.internal:11434',
+    );
+    expect(screen.getByText('Ollama Local API')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /Get your key/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Test' })).toBeTruthy();
   });
 
   it('keeps protocol drafts isolated without leaking API keys between tabs', () => {
@@ -743,9 +764,43 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     expect(screen.queryByRole('button', { name: 'Fetch models' })).toBeNull();
     expect(screen.getByText(/Automatic deployment discovery is not available/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
     expect(screen.queryByRole('button', { name: 'Fetch models' })).toBeNull();
     expect(screen.getByText('Model discovery is not available for this protocol.')).toBeTruthy();
+  });
+
+  it('loads local Ollama models automatically without requiring an API key', async () => {
+    fetchProviderModelsMock.mockResolvedValueOnce({
+      ok: true,
+      kind: 'success',
+      latencyMs: 18,
+      models: [
+        { id: 'gemma4:e2b-it-q4_K_M', label: 'gemma4:e2b-it-q4_K_M' },
+        { id: 'qwen3.6:35b-a3b-q8_0', label: 'qwen3.6:35b-a3b-q8_0' },
+      ],
+    });
+    renderSettingsDialog({
+      apiProtocol: 'ollama',
+      apiKey: '',
+      baseUrl: 'http://host.docker.internal:11434',
+      model: 'gemma4:e2b-it-q4_K_M',
+      apiProviderBaseUrl: 'http://host.docker.internal:11434',
+    });
+
+    expect(await screen.findByText('Fetched 2 models.')).toBeTruthy();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        protocol: 'ollama',
+        baseUrl: 'http://host.docker.internal:11434',
+        apiKey: '',
+      }),
+      expect.any(AbortSignal),
+    );
+    const select = screen.getByLabelText('Model') as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(
+      expect.arrayContaining(['gemma4:e2b-it-q4_K_M', 'qwen3.6:35b-a3b-q8_0', '__custom__']),
+    );
+    expect(screen.queryByText('Model discovery is not available for this protocol.')).toBeNull();
   });
 
   it('does not show a BYOK Test button or nag when the API key is still missing', () => {

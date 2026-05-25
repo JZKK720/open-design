@@ -148,6 +148,37 @@ function extractGoogleModels(data: unknown): ProviderModelOption[] {
   );
 }
 
+function ollamaTagsUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  const pathname = url.pathname
+    .replace(/\/+$/, '')
+    .replace(/\/v\d+$/, '')
+    .replace(/\/api$/, '');
+  url.pathname = `${pathname || ''}/api/tags`.replace(/\/+/g, '/');
+  return url.toString();
+}
+
+function extractOllamaModels(data: unknown): ProviderModelOption[] {
+  const items = (data as { models?: unknown }).models;
+  if (!Array.isArray(items)) return [];
+  return uniqueModels(
+    items
+      .map((item) => {
+        const obj = item && typeof item === 'object'
+          ? item as { name?: unknown; model?: unknown }
+          : null;
+        const id =
+          typeof obj?.name === 'string' && obj.name.trim()
+            ? obj.name.trim()
+            : typeof obj?.model === 'string' && obj.model.trim()
+              ? obj.model.trim()
+              : '';
+        return id ? { id, label: id } : null;
+      })
+      .filter((item): item is ProviderModelOption => item != null),
+  );
+}
+
 function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, apiKey: string): string {
   if (protocol === 'openai' || protocol === 'senseaudio') {
     return appendVersionedApiPath(baseUrl, '/models');
@@ -161,6 +192,9 @@ function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, ap
     const url = new URL(`${baseUrl.replace(/\/+$/, '')}/v1beta/models`);
     url.searchParams.set('key', apiKey);
     return url.toString();
+  }
+  if (protocol === 'ollama') {
+    return ollamaTagsUrl(baseUrl);
   }
   throw new Error(`Unsupported protocol: ${protocol}`);
 }
@@ -178,6 +212,9 @@ function providerModelsHeaders(
       'anthropic-version': '2023-06-01',
     };
   }
+  if (protocol === 'ollama') {
+    return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+  }
   return {};
 }
 
@@ -187,6 +224,7 @@ function extractModels(protocol: ConnectionTestProtocol, data: unknown): Provide
   if (protocol === 'openai' || protocol === 'senseaudio') return extractOpenAiModels(data);
   if (protocol === 'anthropic') return extractAnthropicModels(data);
   if (protocol === 'google') return extractGoogleModels(data);
+  if (protocol === 'ollama') return extractOllamaModels(data);
   return [];
 }
 

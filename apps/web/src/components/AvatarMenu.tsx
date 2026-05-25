@@ -98,7 +98,7 @@ export function AvatarMenu({
             <span className="who">
               {config.mode === 'daemon'
                 ? t('avatar.localCli')
-                : apiProtocolLabel(config.apiProtocol)}
+                : apiProtocolLabel(config.apiProtocol, config.baseUrl)}
             </span>
             <span className="where">
               {config.mode === 'api'

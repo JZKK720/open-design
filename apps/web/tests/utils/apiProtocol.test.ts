@@ -10,12 +10,16 @@ describe('api protocol labels', () => {
   it('labels the selected API protocol instead of assuming Anthropic', () => {
     expect(apiProtocolLabel('openai')).toBe('OpenAI API');
     expect(apiProtocolLabel('google')).toBe('Google Gemini');
+    expect(apiProtocolLabel('ollama', 'http://host.docker.internal:11434')).toBe('Ollama Local API');
     expect(apiProtocolLabel(undefined)).toBe('Anthropic API');
   });
 
   it('includes the selected model when labeling API assistant messages', () => {
     expect(apiProtocolModelLabel('openai', 'google/gemma-4-e4b')).toBe(
       'OpenAI API · google/gemma-4-e4b',
+    );
+    expect(apiProtocolModelLabel('ollama', 'gemma4:e2b-it-q4_K_M', 'http://host.docker.internal:11434')).toBe(
+      'Ollama Local API · gemma4:e2b-it-q4_K_M',
     );
     expect(apiProtocolModelLabel('azure', '  ')).toBe('Azure OpenAI');
   });

@@ -96,6 +96,7 @@ import { KNOWN_PROVIDERS } from '../state/config';
 import type { KnownProvider } from '../state/config';
 import { testApiProvider } from '../providers/connection-test';
 import { fetchProviderModels } from '../providers/provider-models';
+import { isLocalApiBaseUrl } from '../utils/apiBaseUrl';
 
 // The topbar chips (GitHub star, model switcher, Use everywhere)
 // collapse into the settings dropdown when the viewport gets
@@ -111,6 +112,31 @@ import { fetchProviderModels } from '../providers/provider-models';
 // `specs/current/plugin-driven-flow-plan.md`.
 function defaultPluginIdForMetadata(metadata: ProjectMetadata): string | null {
   return defaultScenarioPluginIdForProjectMetadata(metadata);
+}
+
+function matchesSelectedProvider(
+  provider: KnownProvider,
+  apiProviderBaseUrl: string | null | undefined,
+  baseUrl: string,
+): boolean {
+  if (!apiProviderBaseUrl) return false;
+  if (provider.baseUrl === apiProviderBaseUrl && provider.baseUrl === baseUrl) {
+    return true;
+  }
+  return (
+    provider.protocol === 'ollama' &&
+    provider.requiresApiKey === false &&
+    isLocalApiBaseUrl(provider.baseUrl) &&
+    isLocalApiBaseUrl(apiProviderBaseUrl) &&
+    isLocalApiBaseUrl(baseUrl)
+  );
+}
+
+function supportsProviderModelDiscovery(
+  protocol: ApiProtocol,
+  baseUrl: string,
+): boolean {
+  return protocol !== 'azure' && (protocol !== 'ollama' || isLocalApiBaseUrl(baseUrl));
 }
 
 function defaultPluginInputsForCreate(
@@ -825,10 +851,12 @@ function OnboardingView({
     Boolean(config.apiKey.trim()) &&
     Boolean(config.baseUrl.trim()) &&
     Boolean(config.model.trim());
+  const providerModelDiscoverySupported = supportsProviderModelDiscovery(apiProtocol, config.baseUrl);
+  const providerModelsRequireApiKey =
+    !(apiProtocol === 'ollama' && isLocalApiBaseUrl(config.baseUrl));
   const canFetchProviderModels =
-    apiProtocol !== 'azure' &&
-    apiProtocol !== 'ollama' &&
-    Boolean(config.apiKey.trim()) &&
+    providerModelDiscoverySupported &&
+    (!providerModelsRequireApiKey || Boolean(config.apiKey.trim())) &&
     Boolean(config.baseUrl.trim()) &&
     isLikelyHttpUrl(config.baseUrl);
   const visibleProviderTestState =
@@ -844,7 +872,7 @@ function OnboardingView({
   const selectedProvider = KNOWN_PROVIDERS.find(
     (provider) =>
       provider.protocol === apiProtocol &&
-      provider.baseUrl === (config.apiProviderBaseUrl ?? config.baseUrl),
+      matchesSelectedProvider(provider, config.apiProviderBaseUrl, config.baseUrl),
   ) ?? null;
   const visibleAgents = agents.filter(
     (agent) => agent.available && visibleAgentIds.includes(agent.id),
@@ -1512,10 +1540,16 @@ function OnboardingView({
                       const provider = KNOWN_PROVIDERS.find(
                         (item) => item.protocol === apiProtocol && item.baseUrl === baseUrl,
                       );
+                      const nextBaseUrl =
+                        provider?.protocol === 'ollama' &&
+                        provider.requiresApiKey === false &&
+                        isLocalApiBaseUrl(config.baseUrl)
+                          ? config.baseUrl
+                          : provider?.baseUrl ?? '';
                       updateApiConfig({
-                        baseUrl: provider?.baseUrl ?? '',
+                        baseUrl: nextBaseUrl,
                         model: provider?.model ?? '',
-                        apiProviderBaseUrl: provider?.baseUrl ?? null,
+                        apiProviderBaseUrl: nextBaseUrl || null,
                       });
                     }}
                     onApiKeyChange={(apiKey) => updateApiConfig({ apiKey })}

@@ -150,7 +150,7 @@ export const API_PROTOCOL_TABS: ReadonlyArray<{
   { id: 'openai', title: 'OpenAI' },
   { id: 'azure', title: 'Azure OpenAI' },
   { id: 'google', title: 'Google Gemini' },
-  { id: 'ollama', title: 'Ollama Cloud' },
+  { id: 'ollama', title: 'Ollama' },
   { id: 'senseaudio', title: 'SenseAudio' },
 ];
 
@@ -159,7 +159,7 @@ export const API_PROTOCOL_LABELS: Record<ApiProtocol, string> = {
   openai: 'OpenAI API',
   azure: 'Azure OpenAI',
   google: 'Google Gemini',
-  ollama: 'Ollama Cloud API',
+  ollama: 'Ollama API',
   senseaudio: 'SenseAudio API',
 };
 
