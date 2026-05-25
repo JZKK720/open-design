@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import {
   createAgentSink,
   isSmokeOkReply,
+  providerConnectionTimeoutMs,
   redactSecrets,
   resolveConnectionTestTimeoutMs,
   testAgentConnection,
@@ -2595,6 +2596,33 @@ describe('connection test timeout overrides', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('extends trusted local Ollama provider probes when no explicit override is set', () => {
+    expect(
+      providerConnectionTimeoutMs(
+        'ollama',
+        new URL('http://host.docker.internal:11434'),
+        {},
+      ),
+    ).toBe(45_000);
+    expect(
+      providerConnectionTimeoutMs(
+        'ollama',
+        new URL('https://ollama.com'),
+        {},
+      ),
+    ).toBe(12_000);
+  });
+
+  it('lets the explicit provider timeout override win for local Ollama probes', () => {
+    expect(
+      providerConnectionTimeoutMs(
+        'ollama',
+        new URL('http://host.docker.internal:11434'),
+        { OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS: '30000' },
+      ),
+    ).toBe(30_000);
   });
 });
 

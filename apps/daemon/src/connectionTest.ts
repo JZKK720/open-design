@@ -165,6 +165,11 @@ export async function assertExternalAssetUrl(
 // Override with OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS for slow networks
 // or distant providers; invalid values fall back to the default.
 const DEFAULT_PROVIDER_TIMEOUT_MS = 12_000;
+// Self-hosted Ollama cold-starts regularly exceed the generic provider smoke
+// budget even on healthy local machines. Give trusted local Ollama gateways
+// the agent-sized headroom unless the operator explicitly set a provider
+// timeout override.
+const DEFAULT_LOCAL_OLLAMA_PROVIDER_TIMEOUT_MS = 45_000;
 // CLI boot time is dominated by adapter auth/session restore; the heavy
 // adapters (Codex, Cursor Agent) regularly take 5–10 s on a cold first
 // run, so 45 s leaves headroom without making a hung child invisible.
@@ -200,6 +205,30 @@ function providerTimeoutMs(): number {
     'OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS',
     DEFAULT_PROVIDER_TIMEOUT_MS,
   );
+}
+
+export function providerConnectionTimeoutMs(
+  protocol: ConnectionTestProtocol,
+  parsedBaseUrl: ParsedBaseUrl | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const configured = env.OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS;
+  const resolved = resolveConnectionTestTimeoutMs(
+    'OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS',
+    DEFAULT_PROVIDER_TIMEOUT_MS,
+    env,
+  );
+  if (configured !== undefined && configured !== '') {
+    return resolved;
+  }
+  if (
+    protocol === 'ollama' &&
+    parsedBaseUrl &&
+    isTrustedLocalApiHost(parsedBaseUrl.hostname)
+  ) {
+    return DEFAULT_LOCAL_OLLAMA_PROVIDER_TIMEOUT_MS;
+  }
+  return resolved;
 }
 
 function agentTimeoutMs(): number {
@@ -728,7 +757,10 @@ export async function testProviderConnection(
   } else {
     input.signal?.addEventListener('abort', abortFromParent, { once: true });
   }
-  const timer = setTimeout(() => controller.abort(), providerTimeoutMs());
+  const timer = setTimeout(
+    () => controller.abort(),
+    providerConnectionTimeoutMs(input.protocol, validated.parsed),
+  );
 
   try {
     const modelError = await validateLocalOpenAiModel(
