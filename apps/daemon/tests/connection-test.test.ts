@@ -842,17 +842,8 @@ describe('POST /api/test/connection provider mode', () => {
     ).toBe(false);
   });
 
-  it('allows direct private IPv4 base URLs for local OpenAI-compatible providers', async () => {
-    const fetchMock = passThroughOrUpstream((url) => {
-      if (url.endsWith('/models')) {
-        return jsonResponse({
-          data: [{ id: 'local-model', object: 'model' }],
-        });
-      }
-      return jsonResponse({
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-      });
-    });
+  it('rejects direct private IPv4 base URLs for provider connection tests', async () => {
+    const fetchMock = passThroughOrUpstream(() => jsonResponse({}));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await realFetch(`${baseUrl}/api/test/connection`, {
@@ -862,18 +853,18 @@ describe('POST /api/test/connection provider mode', () => {
         mode: 'provider',
         protocol: 'openai',
         baseUrl: 'http://192.168.1.5:8080/v1',
-        apiKey: '',
+        apiKey: 'sk-test',
         model: 'local-model',
       }),
     });
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.ok).toBe(true);
-    expect(body.kind).toBe('success');
+    expect(body.ok).toBe(false);
+    expect(body.kind).toBe('forbidden');
     expect(
       fetchMock.mock.calls.some(
         ([input]) => !String(input).startsWith(baseUrl),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   // Regression for the DNS-bypass SSRF gap flagged on PR #1176: provider

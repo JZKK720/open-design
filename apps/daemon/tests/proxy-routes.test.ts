@@ -210,12 +210,8 @@ describe('API proxy routes', () => {
     );
   });
 
-  it('allows private IPv4 API base URLs for local OpenAI-compatible providers', async () => {
-    const fetchMock = vi.fn((input: FetchInput, init?: FetchInit) => {
-      const url = String(input);
-      if (url.startsWith(baseUrl)) return realFetch(input, init);
-      return Promise.resolve(sseResponse('event: end\ndata: {}\n\n'));
-    });
+  it('blocks private IPv4 API base URLs for OpenAI-compatible providers', async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await realFetch(`${baseUrl}/api/proxy/openai/stream`, {
@@ -223,16 +219,15 @@ describe('API proxy routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         baseUrl: 'http://192.168.1.50:11434/v1',
+        apiKey: 'sk-test',
         model: 'private-model',
         messages: [{ role: 'user', content: 'hello' }],
       }),
     });
 
-    expect(res.status).toBe(200);
-    await expect(res.text()).resolves.toContain('event: end');
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
-      'http://192.168.1.50:11434/v1/chat/completions',
-    );
+    expect(res.status).toBe(403);
+    await expect(res.text()).resolves.toContain('Internal IPs blocked');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([

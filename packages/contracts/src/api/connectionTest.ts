@@ -135,7 +135,7 @@ export function validateBaseUrl(baseUrl: string): BaseUrlValidationResult {
     return { error: 'Only http/https allowed' };
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (!isTrustedLocalApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
+  if (!isLoopbackApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
     return { error: 'Internal IPs blocked', forbidden: true };
   }
   return { parsed };
