@@ -389,6 +389,33 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     ).toBe('https://platform.openai.com/api-keys');
   });
 
+  it('warns BYOK users that API mode cannot edit project files (issue #1106)', () => {
+    // Regression cover: switching from Local CLI to BYOK previously gave no
+    // signal that file-editing tools (`Read`/`Write`/`Edit`) are absent on the
+    // API path. Users typed "continue adjusting the design" expecting edits
+    // and got an HTML monologue back. The notice must be visible on every
+    // BYOK protocol tab so the missing tool surface is discoverable before
+    // the user wastes a turn.
+    renderSettingsDialog();
+
+    const notice = screen.getByTestId('settings-byok-no-file-tools-notice');
+    expect(notice.textContent).toContain('BYOK mode');
+    expect(notice.textContent).toContain("can't read, write, or edit files");
+    expect(notice.textContent).toContain('Local CLI mode');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    expect(screen.getByTestId('settings-byok-no-file-tools-notice')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Google Gemini' }));
+    expect(screen.getByTestId('settings-byok-no-file-tools-notice')).toBeTruthy();
+  });
+
+  it('hides the BYOK no-file-tools notice when Local CLI mode is selected', () => {
+    renderSettingsDialog({ mode: 'daemon' });
+
+    expect(screen.queryByTestId('settings-byok-no-file-tools-notice')).toBeNull();
+  });
+
   it('lets Anthropic and Google users customize the default base URL', () => {
     renderSettingsDialog();
 
@@ -458,7 +485,7 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
   it('offers managed and self-hosted Ollama presets with editable base URLs', () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
     const providerSelect = screen.getByLabelText('Quick fill provider') as HTMLSelectElement;
     expect(providerSelect.options[0]?.textContent).toBe('Custom provider');
     expect(providerSelect.options[1]?.textContent).toBe('Ollama Cloud (managed)');
@@ -504,7 +531,7 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { onPersist } = renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
     fireEvent.change(screen.getByLabelText('Quick fill provider'), {
       target: { value: '1' },
     });
@@ -530,27 +557,6 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       ([input]) => input.toString() === '/api/test/connection',
     );
     expect(testConnectionCalls).toHaveLength(1);
-  });
-
-  it('treats host.docker.internal Ollama as the local self-hosted preset', () => {
-    renderSettingsDialog({
-      apiProtocol: 'ollama',
-      apiKey: '',
-      baseUrl: 'http://host.docker.internal:11434',
-      model: 'gemma4:e2b-it-q4_K_M',
-      apiProviderBaseUrl: 'http://host.docker.internal:11434',
-    });
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
-
-    const providerSelect = screen.getByLabelText('Quick fill provider') as HTMLSelectElement;
-    expect(providerSelect.value).toBe('1');
-    expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(
-      'http://host.docker.internal:11434',
-    );
-    expect(screen.getByText('Ollama Local API')).toBeTruthy();
-    expect(screen.queryByRole('link', { name: /Get your key/i })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Test' })).toBeTruthy();
   });
 
   it('keeps protocol drafts isolated without leaking API keys between tabs', () => {
@@ -764,43 +770,9 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     expect(screen.queryByRole('button', { name: 'Fetch models' })).toBeNull();
     expect(screen.getByText(/Automatic deployment discovery is not available/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Ollama' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Ollama Cloud' }));
     expect(screen.queryByRole('button', { name: 'Fetch models' })).toBeNull();
     expect(screen.getByText('Model discovery is not available for this protocol.')).toBeTruthy();
-  });
-
-  it('loads local Ollama models automatically without requiring an API key', async () => {
-    fetchProviderModelsMock.mockResolvedValueOnce({
-      ok: true,
-      kind: 'success',
-      latencyMs: 18,
-      models: [
-        { id: 'gemma4:e2b-it-q4_K_M', label: 'gemma4:e2b-it-q4_K_M' },
-        { id: 'qwen3.6:35b-a3b-q8_0', label: 'qwen3.6:35b-a3b-q8_0' },
-      ],
-    });
-    renderSettingsDialog({
-      apiProtocol: 'ollama',
-      apiKey: '',
-      baseUrl: 'http://host.docker.internal:11434',
-      model: 'gemma4:e2b-it-q4_K_M',
-      apiProviderBaseUrl: 'http://host.docker.internal:11434',
-    });
-
-    expect(await screen.findByText('Fetched 2 models.')).toBeTruthy();
-    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        protocol: 'ollama',
-        baseUrl: 'http://host.docker.internal:11434',
-        apiKey: '',
-      }),
-      expect.any(AbortSignal),
-    );
-    const select = screen.getByLabelText('Model') as HTMLSelectElement;
-    expect(Array.from(select.options).map((option) => option.value)).toEqual(
-      expect.arrayContaining(['gemma4:e2b-it-q4_K_M', 'qwen3.6:35b-a3b-q8_0', '__custom__']),
-    );
-    expect(screen.queryByText('Model discovery is not available for this protocol.')).toBeNull();
   });
 
   it('does not show a BYOK Test button or nag when the API key is still missing', () => {
@@ -1431,6 +1403,7 @@ describe('SettingsDialog media providers interactions', () => {
     expect(screen.queryByLabelText('Black Forest Labs API key')).toBeNull();
     expect(screen.queryByLabelText('Black Forest Labs Base URL')).toBeNull();
     expect(document.querySelector('.media-provider-coming-soon')).toBeTruthy();
+    expect(screen.getByText('ComfyUI')).toBeTruthy();
   });
 
   it('renders ElevenLabs as an integrated media provider with enabled inputs', () => {

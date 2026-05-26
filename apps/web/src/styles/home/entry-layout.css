@@ -448,8 +448,8 @@
 .entry-nav-rail__logo {
   appearance: none;
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -484,10 +484,10 @@
 .entry-nav-rail__logo-img {
   position: absolute;
   inset: auto;
-  width: 20px;
-  height: 20px;
-  object-fit: contain;
-  border-radius: 0;
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: 8px;
   display: block;
   user-select: none;
   -webkit-user-drag: none;
@@ -708,6 +708,7 @@
   transition: background-color 120ms ease, border-color 120ms ease,
     color 120ms ease;
   max-width: 360px;
+  overflow: hidden;
 }
 .inline-switcher__chip:hover {
   background: var(--bg-subtle);
@@ -747,6 +748,10 @@
   white-space: nowrap;
 }
 .inline-switcher__chip-mode {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--text-strong);
 }
@@ -754,9 +759,14 @@
   color: var(--text-faint);
 }
 .inline-switcher__chip-primary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text);
 }
 .inline-switcher__chip-model {
+  min-width: 0;
   color: var(--text-muted);
   max-width: 160px;
   overflow: hidden;

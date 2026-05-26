@@ -1,6 +1,5 @@
 import type { Express } from 'express';
 import type { RouteDeps } from './server-context.js';
-import { isTrustedLocalApiHost } from '@open-design/contracts/api/connectionTest';
 import { seedProviderIfMissing } from './media-config.js';
 import {
   buildLegacyMaxTokensParam,
@@ -18,7 +17,8 @@ import {
 } from './byok-tools.js';
 import { isSafeId as isSafeProjectId } from './projects.js';
 import { projectKindToTracking } from '@open-design/contracts/analytics';
-import { validateBaseUrl, validateBaseUrlResolved } from './connectionTest.js';
+import { validateBaseUrlResolved } from './connectionTest.js';
+import { googleStreamGenerateContentUrl } from './google-models.js';
 
 // Allowlist for the `/feedback` route. Mirrors the
 // ChatMessageFeedbackReasonCode union in packages/contracts/src/api/chat.ts.
@@ -53,16 +53,6 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     critiqueRunRegistry,
   } = ctx.critique;
   const isDaemonShuttingDown = ctx.lifecycle?.isDaemonShuttingDown ?? (() => false);
-  const allowBlankTrustedGatewayApiKey = (protocol: unknown, baseUrl: unknown) => {
-    if (
-      (protocol !== 'anthropic' && protocol !== 'openai' && protocol !== 'ollama') ||
-      typeof baseUrl !== 'string'
-    ) {
-      return false;
-    }
-    const validated = validateBaseUrl(baseUrl);
-    return Boolean(validated.parsed && isTrustedLocalApiHost(validated.parsed.hostname));
-  };
   const rejectProxyPluginContext = (body: Record<string, unknown>, res: any) => {
     if (
       (typeof body.pluginId === 'string' && body.pluginId.trim().length > 0) ||
@@ -270,15 +260,13 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       typeof body.baseUrl !== 'string' ||
       typeof body.apiKey !== 'string' ||
       !body.baseUrl.trim() ||
-      (!body.apiKey.trim() && !allowBlankTrustedGatewayApiKey(protocol, body.baseUrl))
+      !body.apiKey.trim()
     ) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        allowBlankTrustedGatewayApiKey(protocol, body.baseUrl)
-          ? 'baseUrl is required'
-          : 'baseUrl and apiKey are required',
+        'baseUrl and apiKey are required',
       );
     }
     try {
@@ -334,16 +322,14 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
           typeof body.apiKey !== 'string' ||
           typeof body.model !== 'string' ||
           !body.baseUrl.trim() ||
-          (!body.apiKey.trim() && !allowBlankTrustedGatewayApiKey(protocol, body.baseUrl)) ||
+          !body.apiKey.trim() ||
           !body.model.trim()
         ) {
           return sendApiError(
             res,
             400,
             'BAD_REQUEST',
-            allowBlankTrustedGatewayApiKey(protocol, body.baseUrl)
-              ? 'baseUrl and model are required'
-              : 'baseUrl, apiKey, and model are required',
+            'baseUrl, apiKey, and model are required',
           );
         }
         try {
@@ -649,15 +635,12 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
-    const allowBlankApiKey = allowBlankTrustedGatewayApiKey('anthropic', baseUrl);
-    if (!baseUrl || !model || (!apiKey && !allowBlankApiKey)) {
+    if (!baseUrl || !apiKey || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        allowBlankApiKey
-          ? 'baseUrl and model are required'
-          : 'baseUrl, apiKey, and model are required',
+        'baseUrl, apiKey, and model are required',
       );
     }
 
@@ -694,8 +677,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
-          ...(apiKey ? { 'x-api-key': apiKey } : {}),
         },
         body: JSON.stringify(payload),
         redirect: 'error',
@@ -748,15 +731,12 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
-    const allowBlankApiKey = allowBlankTrustedGatewayApiKey('openai', baseUrl);
-    if (!baseUrl || !model || (!apiKey && !allowBlankApiKey)) {
+    if (!baseUrl || !apiKey || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        allowBlankApiKey
-          ? 'baseUrl and model are required'
-          : 'baseUrl, apiKey, and model are required',
+        'baseUrl, apiKey, and model are required',
       );
     }
 
@@ -797,7 +777,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(payload),
         redirect: 'error',
@@ -1010,8 +990,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
 
-    const clean = effectiveBaseUrl.replace(/\/+$/, '');
-    const url = `${clean}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+    const url = googleStreamGenerateContentUrl(effectiveBaseUrl, model);
     console.log(
       `[proxy:google] ${req.method} ${validated.parsed!.hostname} model=${model}`,
     );
@@ -1089,17 +1068,11 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const proxyBody = req.body || {};
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } = proxyBody;
-    const effectiveBaseUrl = baseUrl || 'https://ollama.com';
-    const allowBlankApiKey = allowBlankTrustedGatewayApiKey('ollama', effectiveBaseUrl);
-    if ((!apiKey && !allowBlankApiKey) || !model) {
-      return sendApiError(
-        res,
-        400,
-        'BAD_REQUEST',
-        allowBlankApiKey ? 'model is required' : 'apiKey and model are required',
-      );
+    if (!apiKey || !model) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'apiKey and model are required');
     }
 
+    const effectiveBaseUrl = baseUrl || 'https://ollama.com';
     const validated = await validateExternalApiBaseUrl(effectiveBaseUrl);
     if (validated.error) {
       return sendApiError(
@@ -1129,10 +1102,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(payload),
         redirect: 'error',
       });

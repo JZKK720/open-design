@@ -1,14 +1,9 @@
-import type {
-  AppConfigBootstrap,
-  AppConfigPrefs,
-  AppConfigResponse,
-} from '@open-design/contracts';
+import type { AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';
 import type {
   ApiProtocol,
   AppConfig,
-  ExecutionConfigSource,
   MediaProviderCredentials,
   NotificationsConfig,
   OrbitConfig,
@@ -345,86 +340,6 @@ function inferApiProtocol(model: string, baseUrl: string): ApiProtocol {
   }
 }
 
-function hasCustomApiConfig(config: AppConfig): boolean {
-  return (
-    config.mode !== DEFAULT_CONFIG.mode ||
-    config.baseUrl !== DEFAULT_CONFIG.baseUrl ||
-    config.model !== DEFAULT_CONFIG.model ||
-    config.apiProtocol !== DEFAULT_CONFIG.apiProtocol ||
-    (config.apiProviderBaseUrl ?? null) !==
-      (DEFAULT_CONFIG.apiProviderBaseUrl ?? null)
-  );
-}
-
-function matchesBootstrapExecutionEnvelope(
-  config: AppConfig,
-  bootstrap: AppConfigBootstrap | undefined,
-): boolean {
-  if (!bootstrap) return false;
-  if (config.apiKey.trim()) return false;
-  if (bootstrap.mode !== undefined && config.mode !== bootstrap.mode) {
-    return false;
-  }
-  if (bootstrap.baseUrl !== undefined && config.baseUrl !== bootstrap.baseUrl) {
-    return false;
-  }
-  if (
-    bootstrap.apiProtocol !== undefined
-    && config.apiProtocol !== bootstrap.apiProtocol
-  ) {
-    return false;
-  }
-  if (
-    bootstrap.apiProviderBaseUrl !== undefined
-    && (config.apiProviderBaseUrl ?? null) !== (bootstrap.apiProviderBaseUrl ?? null)
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function inferExecutionConfigSource(
-  config: AppConfig,
-  bootstrap: AppConfigBootstrap | undefined,
-): ExecutionConfigSource {
-  if (config.executionConfigSource === 'custom') return 'custom';
-  if (config.executionConfigSource === 'bootstrap') return 'bootstrap';
-  if (!hasCustomApiConfig(config)) return 'bootstrap';
-  return matchesBootstrapExecutionEnvelope(config, bootstrap)
-    ? 'bootstrap'
-    : 'custom';
-}
-
-function mergeDaemonBootstrap(
-  config: AppConfig,
-  bootstrap: AppConfigBootstrap | undefined,
-): AppConfig {
-  if (!bootstrap) return config;
-
-  const executionConfigSource = inferExecutionConfigSource(config, bootstrap);
-  if (executionConfigSource === 'custom') {
-    return { ...config, executionConfigSource };
-  }
-
-  const next: AppConfig = { ...config, executionConfigSource };
-  if (bootstrap.mode !== undefined) {
-    next.mode = bootstrap.mode;
-  }
-  if (bootstrap.baseUrl !== undefined) {
-    next.baseUrl = bootstrap.baseUrl;
-  }
-  if (bootstrap.model !== undefined) {
-    next.model = bootstrap.model;
-  }
-  if (bootstrap.apiProtocol !== undefined) {
-    next.apiProtocol = bootstrap.apiProtocol;
-  }
-  if (bootstrap.apiProviderBaseUrl !== undefined) {
-    next.apiProviderBaseUrl = bootstrap.apiProviderBaseUrl;
-  }
-  return next;
-}
-
 export function loadConfig(): AppConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -436,41 +351,33 @@ export function loadConfig(): AppConfig {
         orbit: normalizeOrbit(DEFAULT_ORBIT),
       };
     }
-    const parsed = JSON.parse(raw) as Partial<AppConfig> & {
-      allowLocalApiBaseUrl?: boolean;
-    };
-    const {
-      allowLocalApiBaseUrl: _legacyAllowLocalApiBaseUrl,
-      ...parsedConfig
-    } = parsed;
+    const parsed = JSON.parse(raw) as Partial<AppConfig>;
     // Strip daemon-owned privacy fields if a stale localStorage payload
     // still carries them. Older builds wrote these to localStorage; we
     // now treat the daemon as authoritative so the user can rotate /
     // revoke without leaving residue in browser storage.
     for (const key of DAEMON_OWNED_KEYS) {
-      delete (parsedConfig as Record<string, unknown>)[key];
+      delete (parsed as Record<string, unknown>)[key];
     }
     const parsedHasApiProtocol = Object.prototype.hasOwnProperty.call(
-      parsedConfig,
+      parsed,
       'apiProtocol',
     );
     const merged: AppConfig = {
       ...DEFAULT_CONFIG,
-      ...parsedConfig,
-      apiProtocolConfigs: { ...(parsedConfig.apiProtocolConfigs ?? {}) },
-      mediaProviders: { ...(parsedConfig.mediaProviders ?? {}) },
-      composio: { ...(parsedConfig.composio ?? {}) },
-      agentModels: { ...(parsedConfig.agentModels ?? {}) },
-      agentCliEnv: { ...(parsedConfig.agentCliEnv ?? {}) },
-      accentColor:
-        normalizeAccentColor(parsedConfig.accentColor) ??
-        DEFAULT_CONFIG.accentColor,
-      pet: normalizePet(parsedConfig.pet),
-      notifications: normalizeNotifications(parsedConfig.notifications),
-      orbit: normalizeOrbit(parsedConfig.orbit),
+      ...parsed,
+      apiProtocolConfigs: { ...(parsed.apiProtocolConfigs ?? {}) },
+      mediaProviders: { ...(parsed.mediaProviders ?? {}) },
+      composio: { ...(parsed.composio ?? {}) },
+      agentModels: { ...(parsed.agentModels ?? {}) },
+      agentCliEnv: { ...(parsed.agentCliEnv ?? {}) },
+      accentColor: normalizeAccentColor(parsed.accentColor) ?? DEFAULT_CONFIG.accentColor,
+      pet: normalizePet(parsed.pet),
+      notifications: normalizeNotifications(parsed.notifications),
+      orbit: normalizeOrbit(parsed.orbit),
     };
 
-    if (parsedConfig.configMigrationVersion !== CONFIG_MIGRATION_VERSION) {
+    if (parsed.configMigrationVersion !== CONFIG_MIGRATION_VERSION) {
       // Migration v1: configs saved before apiProtocol existed need an explicit
       // protocol so old OpenAI-compatible endpoints keep routing correctly.
       // This is version-gated instead of only field-gated so a later imported
@@ -719,62 +626,60 @@ export function saveConfig(config: AppConfig): void {
 
 export function mergeDaemonConfig(
   localConfig: AppConfig,
-  daemonConfig: AppConfigResponse | null,
+  daemonConfig: AppConfigPrefs | null,
 ): AppConfig {
   const next = { ...localConfig };
   if (!daemonConfig) return next;
 
-  const persisted = daemonConfig.config;
-
-  if (persisted.onboardingCompleted != null) {
-    next.onboardingCompleted = persisted.onboardingCompleted;
+  if (daemonConfig.onboardingCompleted != null) {
+    next.onboardingCompleted = daemonConfig.onboardingCompleted;
   }
-  if (persisted.agentId !== undefined) {
-    next.agentId = persisted.agentId;
+  if (daemonConfig.agentId !== undefined) {
+    next.agentId = daemonConfig.agentId;
   }
-  if (persisted.skillId !== undefined) {
-    next.skillId = persisted.skillId;
+  if (daemonConfig.skillId !== undefined) {
+    next.skillId = daemonConfig.skillId;
   }
-  if (persisted.designSystemId !== undefined) {
-    next.designSystemId = persisted.designSystemId;
+  if (daemonConfig.designSystemId !== undefined) {
+    next.designSystemId = daemonConfig.designSystemId;
   }
-  if (persisted.agentModels) {
+  if (daemonConfig.agentModels) {
     next.agentModels = {
       ...(next.agentModels ?? {}),
-      ...persisted.agentModels,
+      ...daemonConfig.agentModels,
     };
   }
-  next.agentCliEnv = persisted.agentCliEnv ?? {};
-  if (persisted.disabledSkills !== undefined) {
-    next.disabledSkills = persisted.disabledSkills;
+  next.agentCliEnv = daemonConfig.agentCliEnv ?? {};
+  if (daemonConfig.disabledSkills !== undefined) {
+    next.disabledSkills = daemonConfig.disabledSkills;
   }
-  if (persisted.disabledDesignSystems !== undefined) {
-    next.disabledDesignSystems = persisted.disabledDesignSystems;
+  if (daemonConfig.disabledDesignSystems !== undefined) {
+    next.disabledDesignSystems = daemonConfig.disabledDesignSystems;
   }
-  if (persisted.orbit !== undefined) {
-    next.orbit = normalizeOrbit(persisted.orbit);
+  if (daemonConfig.orbit !== undefined) {
+    next.orbit = normalizeOrbit(daemonConfig.orbit);
   }
-  if (persisted.installationId !== undefined) {
-    next.installationId = persisted.installationId;
+  if (daemonConfig.installationId !== undefined) {
+    next.installationId = daemonConfig.installationId;
   }
-  if (persisted.telemetry !== undefined) {
-    next.telemetry = { ...persisted.telemetry };
+  if (daemonConfig.telemetry !== undefined) {
+    next.telemetry = { ...daemonConfig.telemetry };
   }
-  if (persisted.privacyDecisionAt !== undefined) {
-    next.privacyDecisionAt = persisted.privacyDecisionAt;
+  if (daemonConfig.privacyDecisionAt !== undefined) {
+    next.privacyDecisionAt = daemonConfig.privacyDecisionAt;
   } else if (
-    persisted.installationId !== undefined ||
-    persisted.telemetry !== undefined
+    daemonConfig.installationId !== undefined ||
+    daemonConfig.telemetry !== undefined
   ) {
     // One-shot migration for configs created before privacyDecisionAt
     // existed. If the daemon already has an id or telemetry prefs, the user
     // has resolved the first-run prompt and should not see it again.
     next.privacyDecisionAt = Date.now();
   }
-  if (persisted.customInstructions !== undefined) {
-    next.customInstructions = persisted.customInstructions ?? undefined;
+  if (daemonConfig.customInstructions !== undefined) {
+    next.customInstructions = daemonConfig.customInstructions ?? undefined;
   }
-  return mergeDaemonBootstrap(next, daemonConfig.bootstrap);
+  return next;
 }
 
 export function mergeDaemonMediaProviders(
@@ -859,12 +764,12 @@ export async function syncMediaProvidersToDaemon(
   }
 }
 
-export async function fetchDaemonConfig(): Promise<AppConfigResponse | null> {
+export async function fetchDaemonConfig(): Promise<AppConfigPrefs | null> {
   try {
     const res = await fetch('/api/app-config');
     if (!res.ok) return null;
     const data = await res.json();
-    return data && typeof data === 'object' ? (data as AppConfigResponse) : null;
+    return data?.config ?? null;
   } catch {
     return null;
   }

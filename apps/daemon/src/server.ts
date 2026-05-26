@@ -27,7 +27,6 @@ import { expandHomePrefix, resolveProjectRelativePath } from './home-expansion.j
 import { createCommandInvocation } from '@open-design/platform';
 import { SIDECAR_DEFAULTS, SIDECAR_ENV } from '@open-design/sidecar-proto';
 import {
-  applyAgentLaunchEnv,
   buildLiveArtifactsMcpServersForAgent,
   checkPromptArgvBudget,
   checkWindowsCmdShimCommandLineBudget,
@@ -35,6 +34,7 @@ import {
   detectAgents,
   getAgentDef,
   isKnownModel,
+  applyAgentLaunchEnv,
   resolveAgentLaunch,
   sanitizeCustomModel,
   spawnEnvForAgent,
@@ -89,6 +89,7 @@ import { createDesignSystemGenerationJobStore } from './design-system-generation
 import {
   applyDiffReviewDecisionToCwd,
   applyPlugin,
+  buildConnectorProbe,
   defaultBundledRoot,
   doctorPlugin,
   FIRST_PARTY_ATOMS,
@@ -281,13 +282,7 @@ import {
   readAllTokens,
   setToken,
 } from './mcp-tokens.js';
-import {
-  agentCliEnvForAgent,
-  readAppConfig,
-  readAppConfigBootstrapFromEnv,
-  readPluginEnvKnobs,
-  writeAppConfig,
-} from './app-config.js';
+import { agentCliEnvForAgent, readAppConfig, readPluginEnvKnobs, writeAppConfig } from './app-config.js';
 import { OrbitService, formatLocalProjectTimestamp, renderOrbitTemplateSystemPrompt } from './orbit.js';
 import { buildOrbitNoLiveArtifactSummary } from './orbit-agent-summary.js';
 import {
@@ -400,7 +395,7 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
-import { configureConnectorCredentialStore, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
+import { configureConnectorCredentialStore, connectorService, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
 import { configureComposioConfigStore } from './connectors/composio-config.js';
 import { CHAT_TOOL_ENDPOINTS, CHAT_TOOL_OPERATIONS, toolTokenRegistry } from './tool-tokens.js';
@@ -790,6 +785,7 @@ export function normalizeCommentAttachments(input) {
         currentText: compactString(raw.currentText, 160),
         pagePosition: normalizeAttachmentPosition(raw.pagePosition),
         htmlHint: compactString(raw.htmlHint, 180),
+        style: normalizeAnnotationStyle(raw.style),
         selectionKind,
         memberCount,
         podMembers,
@@ -825,6 +821,7 @@ export function renderCommentAttachmentHint(commentAttachments) {
       `position: ${formatAttachmentPosition(item.pagePosition)}`,
       `currentText: ${item.currentText || '(empty)'}`,
       `htmlHint: ${item.htmlHint || '(none)'}`,
+      `computedStyle: ${formatAnnotationStyle(item.style) || '(none)'}`,
       `comment: ${item.comment}`,
     );
     if (targetKind === 'visual') {
@@ -843,6 +840,8 @@ export function renderCommentAttachmentHint(commentAttachments) {
         lines.push(
           `member.${memberIndex + 1}: ${member.elementId} | ${member.label || '(unlabeled)'} | ${member.selector}`,
         );
+        const memberStyle = formatAnnotationStyle(member.style);
+        if (memberStyle) lines.push(`member.${memberIndex + 1}.computedStyle: ${memberStyle}`);
       });
     }
   }
@@ -869,6 +868,7 @@ function visualAnnotationIntent(markKind) {
   }
   return 'The screenshot has red strokes that identify the visual region the user wants changed.';
 }
+
 function compactString(value, max) {
   const text = cleanString(value).replace(/\s+/g, ' ');
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -900,10 +900,49 @@ function normalizeAttachmentPodMembers(input) {
         text: compactString(member.text, 160),
         position: normalizeAttachmentPosition(member.position),
         htmlHint: compactString(member.htmlHint, 180),
+        style: normalizeAnnotationStyle(member.style),
       };
     })
     .filter(Boolean);
 }
+
+function normalizeAnnotationStyle(input) {
+  if (!input || typeof input !== 'object') return undefined;
+  const style = {};
+  for (const key of ANNOTATION_STYLE_KEYS) {
+    const value = input[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.replace(/\s+/g, ' ').trim();
+    if (trimmed) style[key] = trimmed.slice(0, 120);
+  }
+  return Object.keys(style).length > 0 ? style : undefined;
+}
+
+function formatAnnotationStyle(style) {
+  if (!style || typeof style !== 'object') return '';
+  return ANNOTATION_STYLE_KEYS
+    .map((key) => {
+      const value = style[key];
+      return value ? `${key}: ${value}` : null;
+    })
+    .filter(Boolean)
+    .join('; ');
+}
+
+const ANNOTATION_STYLE_KEYS = [
+  'color',
+  'backgroundColor',
+  'fontSize',
+  'fontWeight',
+  'lineHeight',
+  'textAlign',
+  'fontFamily',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+  'borderRadius',
+];
 
 function finiteAttachmentNumber(value) {
   return Number.isFinite(value) ? Math.round(value) : 0;
@@ -1091,7 +1130,7 @@ export function resolveStaticSpaFallbackPath(req, staticDir) {
 }
 
 export function registerStaticSpaFallback(app, staticDir) {
-  app.get('*', (req, res, next) => {
+  app.get('/*splat', (req, res, next) => {
     const indexPath = resolveStaticSpaFallbackPath(req, staticDir);
     if (indexPath == null) return next();
     res.sendFile(indexPath);
@@ -2400,20 +2439,6 @@ function isLoopbackPeerAddress(address) {
   return false;
 }
 
-export function isOpenDaemonApiProbePath(pathname) {
-  switch (String(pathname || '').trim()) {
-    case '/health':
-    case '/version':
-    case '/daemon/status':
-    case '/api/health':
-    case '/api/version':
-    case '/api/daemon/status':
-      return true;
-    default:
-      return false;
-  }
-}
-
 function localOriginFromHeader(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -3409,8 +3434,9 @@ export async function startServer({
   // value matching `OD_API_TOKEN`. Health / version / status remain
   // open so monitoring probes don't need the token.
   if (apiToken.length > 0) {
+    const openProbePaths = new Set(['/api/health', '/api/version', '/api/daemon/status']);
     app.use('/api', (req, res, next) => {
-      if (isOpenDaemonApiProbePath(req.path)) return next();
+      if (openProbePaths.has(req.path)) return next();
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
       // header here because a reverse proxy MUST always forward the
       // bearer; the loopback bypass exists for the localhost desktop
@@ -5077,11 +5103,7 @@ export async function startServer({
     listMediaTasksByProject,
     listElevenLabsVoiceOptions,
   };
-  const appConfigDeps = {
-    readAppConfig,
-    readAppConfigBootstrapFromEnv,
-    writeAppConfig,
-  };
+  const appConfigDeps = { readAppConfig, writeAppConfig };
   const orbitDeps = { orbitService };
   const nativeDialogDeps = { openNativeFolderDialog };
   const researchDeps = { searchResearch, ResearchError };
@@ -5700,7 +5722,8 @@ export async function startServer({
         res.setHeader('Access-Control-Allow-Origin', 'null');
       }
       res.setHeader('Cache-Control', 'no-store');
-      res.sendFile(sheet.absPath);
+      const buf = await fs.promises.readFile(sheet.absPath);
+      res.send(buf);
     } catch (err) {
       res.status(500).type('text/plain').send(String(err));
     }
@@ -6330,7 +6353,8 @@ export async function startServer({
       const locale = typeof body.locale === 'string' ? body.locale : undefined;
 
       const registry = await loadPluginRegistryView();
-      const computed = applyPlugin({ plugin, inputs, registry, locale });
+      const connectorProbe = buildConnectorProbe(connectorService);
+      const computed = applyPlugin({ plugin, inputs, registry, locale, connectorProbe });
       // Plan §3.B2 — apply-time grants are merged into the snapshot's
       // capabilitiesGranted so the §9 capability gate sees them, but
       // they are NOT written back to installed_plugins.capabilities_granted.
@@ -6414,6 +6438,7 @@ export async function startServer({
       });
 
       const registry = await loadPluginRegistryView();
+      const connectorProbe = buildConnectorProbe(connectorService);
       const resolved = resolvePluginSnapshot({
         db,
         body: {
@@ -6430,6 +6455,7 @@ export async function startServer({
         projectId: id,
         conversationId: cid,
         registry,
+        connectorProbe,
       });
       if (resolved && !resolved.ok) {
         res.status(resolved.status).json(resolved.body);
@@ -6462,7 +6488,8 @@ export async function startServer({
       const plugin = getInstalledPlugin(db, req.params.id);
       if (!plugin) return res.status(404).json({ error: 'plugin not found' });
       const registry = await loadPluginRegistryView();
-      const report = doctorPlugin(plugin, registry);
+      const connectorProbe = buildConnectorProbe(connectorService);
+      const report = doctorPlugin(plugin, registry, { connectorProbe });
       res.json(report);
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -6919,11 +6946,12 @@ export async function startServer({
     });
   });
 
-  app.get('/api/plugins/:id/asset/*', async (req, res) => {
+  app.get('/api/plugins/:id/asset/*splat', async (req, res) => {
     try {
       const plugin = getInstalledPlugin(db, req.params.id);
       if (!plugin) return res.status(404).json({ error: 'plugin not found' });
-      const relpath = String(req.params[0] ?? '');
+      const splatParam = req.params.splat;
+      const relpath = Array.isArray(splatParam) ? splatParam.join('/') : String(splatParam ?? '');
       // Reject obvious traversal up-front; the path resolution below
       // normalizes again, but this catches the easy cases without
       // touching disk.
@@ -7751,14 +7779,15 @@ export async function startServer({
   // The example response above rewrites `./assets/<file>` into a request
   // against this route; we still keep the on-disk paths human-friendly so
   // contributors can preview `example.html` straight from disk.
-  app.get('/api/skills/:id/assets/*', async (req, res) => {
+  app.get('/api/skills/:id/assets/*splat', async (req, res) => {
     try {
       const skills = await listAllSkills();
       const skill = findSkillById(skills, req.params.id);
       if (!skill) {
         return res.status(404).type('text/plain').send('skill not found');
       }
-      const relPath = String(req.params[0] || '');
+      const splatParam = req.params.splat;
+      const relPath = Array.isArray(splatParam) ? splatParam.join('/') : String(splatParam || '');
       const assetsRoot = path.resolve(skill.dir, 'assets');
       const target = path.resolve(assetsRoot, relPath);
       if (target !== assetsRoot && !target.startsWith(assetsRoot + path.sep)) {
@@ -7773,7 +7802,7 @@ export async function startServer({
       if (req.headers.origin === 'null') {
         res.header('Access-Control-Allow-Origin', '*');
       }
-      res.type(mimeFor(target)).sendFile(target);
+      await res.type(mimeFor(target)).sendFile(target);
     } catch (err) {
       res.status(500).type('text/plain').send(String(err));
     }
@@ -8815,7 +8844,7 @@ export async function startServer({
   // Preflight for the raw file route. Current artifact fetches are simple GETs
   // (no preflight needed), but an explicit handler future-proofs the route if
   // artifacts ever add custom request headers.
-  app.options('/api/projects/:id/raw/*', (req, res) => {
+  app.options(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, (req, res) => {
     if (req.headers.origin === 'null') {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET');
@@ -8824,11 +8853,12 @@ export async function startServer({
     res.sendStatus(204);
   });
 
-  app.get('/api/projects/:id/raw/*', async (req, res) => {
+  app.get(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, async (req, res) => {
     try {
-      const relPath = req.params[0];
-      const project = getProject(db, req.params.id);
-      const file = await readProjectFile(PROJECTS_DIR, req.params.id, relPath, project?.metadata);
+      const projectId = String(req.params[0] ?? '');
+      const relPath = String(req.params[1] ?? '');
+      const project = getProject(db, projectId);
+      const file = await readProjectFile(PROJECTS_DIR, projectId, relPath, project?.metadata);
       // PreviewModal loads artifact HTML via srcdoc, giving the iframe Origin: "null".
       // data: URIs, file://, and some sandboxed iframes also send null — all are
       // local-only callers, so this is safe. Real cross-origin sites send a real
@@ -8883,10 +8913,12 @@ export async function startServer({
     }
   });
 
-  app.delete('/api/projects/:id/raw/*', async (req, res) => {
+  app.delete(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, async (req, res) => {
     try {
-      const project = getProject(db, req.params.id);
-      await deleteProjectFile(PROJECTS_DIR, req.params.id, req.params[0], project?.metadata);
+      const projectId = String(req.params[0] ?? '');
+      const rawSplat = String(req.params[1] ?? '');
+      const project = getProject(db, projectId);
+      await deleteProjectFile(PROJECTS_DIR, projectId, rawSplat, project?.metadata);
       /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
       const body = { ok: true };
       res.json(body);
@@ -8928,13 +8960,15 @@ export async function startServer({
     }
   });
 
-  app.get('/api/projects/:id/files/*', async (req, res) => {
+  app.get(/^\/api\/projects\/([^/]+)\/files\/(.+)$/u, async (req, res) => {
     try {
-      const project = getProject(db, req.params.id);
+      const projectId = String(req.params[0] ?? '');
+      const fileSplat = String(req.params[1] ?? '');
+      const project = getProject(db, projectId);
       const file = await readProjectFile(
         PROJECTS_DIR,
-        req.params.id,
-        req.params[0],
+        projectId,
+        fileSplat,
         project?.metadata,
       );
       res.type(file.mime).send(file.buffer);
@@ -9080,6 +9114,35 @@ export async function startServer({
       const status = typeof err?.status === 'number' ? err.status : 400;
       res
         .status(status)
+        .json({ error: String(err && err.message ? err.message : err) });
+    }
+  });
+
+  app.get('/api/app-config', async (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    try {
+      const config = await readAppConfig(RUNTIME_DATA_DIR);
+      res.json({ config });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: String(err && err.message ? err.message : err) });
+    }
+  });
+
+  app.put('/api/app-config', async (req, res) => {
+    if (!isLocalSameOrigin(req, resolvedPort)) {
+      return res.status(403).json({ error: 'cross-origin request rejected' });
+    }
+    try {
+      const config = await writeAppConfig(RUNTIME_DATA_DIR, req.body);
+      orbitService.configure(config.orbit);
+      res.json({ config });
+    } catch (err) {
+      res
+        .status(500)
         .json({ error: String(err && err.message ? err.message : err) });
     }
   });
@@ -10297,13 +10360,22 @@ export async function startServer({
       clientSystemPrompt: clientInstructionPrompt,
       finalPromptOverride: codexImagegenOverride,
     });
+    // Some models (notably claude-opus-4-7 with --include-partial-messages)
+    // start their reply by echoing the top of the user message verbatim,
+    // so the rendered chat shows a "# Instructions ..." block ahead of the
+    // real answer. Closing every Instructions block with an explicit
+    // "do not echo" line cuts the regression in practice without changing
+    // the turn-shape every agent CLI expects (user message carrying both
+    // instructions and request) — see server.ts:9920 composer notes.
+    const ECHO_GUARD =
+      '\n\n(Do not quote, restate, or echo the # Instructions block above in your reply. Begin your response with the answer to the # User request below.)';
     const composed = [
       instructionPrompt
-        ? `# Instructions (read first)\n\n${instructionPrompt}${cwdHint}${linkedDirsHint}\n\n---\n`
+        ? `# Instructions (read first)\n\n${instructionPrompt}${cwdHint}${linkedDirsHint}${ECHO_GUARD}\n\n---\n`
         : cwdHint
-          ? `# Instructions${cwdHint}${linkedDirsHint}\n\n---\n`
+          ? `# Instructions${cwdHint}${linkedDirsHint}${ECHO_GUARD}\n\n---\n`
           : linkedDirsHint
-            ? `# Instructions${linkedDirsHint}\n\n---\n`
+            ? `# Instructions${linkedDirsHint}${ECHO_GUARD}\n\n---\n`
             : '',
       `# User request\n\n${userRequestPrompt}${attachmentHint}${commentHint}`,
       safeImages.length
@@ -11622,6 +11694,7 @@ export async function startServer({
           ? req.body.conversationId
           : null,
         registry: registryView,
+        connectorProbe: buildConnectorProbe(connectorService),
       });
       if (resolved && !resolved.ok) {
         if (!explicitPlugin) {

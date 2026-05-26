@@ -32,8 +32,8 @@
   font-size: 13px;
 }
 .home-hero__brand-mark {
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -41,7 +41,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  padding: 1px;
+  padding: 2px;
 }
 .home-hero__brand-mark img {
   width: 100%;
