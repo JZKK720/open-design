@@ -9,8 +9,11 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 - `pnpm tools-dev run web` runs foreground daemon + web for the Playwright webServer flow.
 - `pnpm tools-dev inspect desktop ...` inspects the desktop runtime through sidecar IPC.
 - `tools/pack` provides `@open-design/tools-pack` and the `tools-pack` bin. The active slice is packaged artifact build/install/start/stop/logs/uninstall/cleanup/list/reset plus beta release artifact preparation for mac and Windows lanes, plus a Linux AppImage lane with optional containerized builds.
-- `tools/pr` provides `@open-design/tools-pr` and the `tools-pr` bin. It is the maintainer PR-duty control plane: a thin `gh` wrapper that encodes this repo's review-lane derivation, forbidden-surface flags, per-lane checklists, and validation-command suggestions. It must not perform side effects (approve / request changes / merge / close / push); those stay in explicit `gh` calls the maintainer runs.
 - `tools/serve` provides `@open-design/tools-serve` and the `tools-serve` bin. It owns local fixture services such as `tools-serve start updater`.
+
+## Retired tools
+
+- `tools/pr` / `@open-design/tools-pr` / `pnpm tools-pr` has been retired from this repository. Maintainer PR-duty workflows now live outside the product workspace in `PerishCode/duty`; do not restore an Open Design-local PR-duty tool without a new explicit maintainer decision.
 
 ## Packaging scope
 
@@ -26,26 +29,6 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 - Do not hand-build `--od-stamp-*` args, process-scan regexes, runtime tokens, process roles, or duplicate namespace/source args in `tools/dev`, future `tools/pack`, or packaged launchers.
 - Port flags are authoritative inputs: `--daemon-port` and `--web-port`. Internal env vars are `OD_PORT` and `OD_WEB_PORT`; do not introduce `NEXT_PORT`.
 
-## Build-agent checklist
-
-When reviewing or adapting tooling builds, require all of the following:
-
-1. `tools-dev` and `tools-pack` changes use package primitives (`sidecar-proto`, `sidecar`, `platform`) instead of copied process/stamp logic.
-2. Validation runs package-scoped first:
-	- `pnpm --filter @open-design/tools-dev typecheck`
-	- `pnpm --filter @open-design/tools-dev build`
-	- `pnpm --filter @open-design/tools-pack typecheck`
-	- `pnpm --filter @open-design/tools-pack build`
-3. Lifecycle verification still goes through `pnpm tools-dev ...` and never through removed legacy root aliases.
-4. Namespace/path behavior is validated independently from transport ports.
-
-## Current adaptation focus
-
-- Primary tooling adaptation surface: `tools/dev` and `tools/pack`.
-- In-scope tooling adaptations: build pipeline/CI updates, release artifact preparation, and namespace-aware lifecycle/install behavior for adapted app shells.
-- Preserve current command coverage and runtime behavior while extending tooling for adaptation work.
-- Prefer extending existing `tools-dev` and `tools-pack` surfaces over introducing parallel lifecycle commands.
-
 ## Common tools commands
 
 ```bash
@@ -53,8 +36,6 @@ pnpm --filter @open-design/tools-dev typecheck
 pnpm --filter @open-design/tools-dev build
 pnpm --filter @open-design/tools-pack typecheck
 pnpm --filter @open-design/tools-pack build
-pnpm --filter @open-design/tools-pr typecheck
-pnpm --filter @open-design/tools-pr build
 pnpm --filter @open-design/tools-serve typecheck
 pnpm --filter @open-design/tools-serve build
 pnpm tools-dev status --json
@@ -73,9 +54,5 @@ pnpm tools-pack linux install --headless
 pnpm tools-pack linux start --headless
 pnpm tools-pack linux stop --headless
 pnpm tools-pack linux build --containerized
-pnpm tools-pr list
-pnpm tools-pr list --bucket=merge-ready,approved-blocked
-pnpm tools-pr view <num>
-pnpm tools-pr view <num> --json
 pnpm tools-serve start updater
 ```

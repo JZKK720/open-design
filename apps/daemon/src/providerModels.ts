@@ -7,8 +7,9 @@ import type {
   ProviderModelsRequest,
   ProviderModelsResponse,
 } from '@open-design/contracts/api/providerModels';
-import { isTrustedLocalApiHost } from '@open-design/contracts/api/connectionTest';
+import { isLoopbackApiHost } from '@open-design/contracts/api/connectionTest';
 import { redactSecrets, validateBaseUrlResolved } from './connectionTest.js';
+import { googleProviderModelsUrl, normalizeGoogleModelId } from './google-models.js';
 
 type ProviderModelsInput = ProviderModelsRequest & { signal?: AbortSignal };
 
@@ -114,11 +115,10 @@ function extractAnthropicModels(data: unknown): ProviderModelOption[] {
 
 function googleModelId(rawName: unknown, rawBaseModelId: unknown): string {
   if (typeof rawBaseModelId === 'string' && rawBaseModelId.trim()) {
-    return rawBaseModelId.trim();
+    return normalizeGoogleModelId(rawBaseModelId);
   }
   if (typeof rawName !== 'string') return '';
-  const name = rawName.trim();
-  return name.startsWith('models/') ? name.slice('models/'.length) : name;
+  return normalizeGoogleModelId(rawName);
 }
 
 function supportsGoogleGenerateContent(item: unknown): boolean {
@@ -148,37 +148,6 @@ function extractGoogleModels(data: unknown): ProviderModelOption[] {
   );
 }
 
-function ollamaTagsUrl(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  const pathname = url.pathname
-    .replace(/\/+$/, '')
-    .replace(/\/v\d+$/, '')
-    .replace(/\/api$/, '');
-  url.pathname = `${pathname || ''}/api/tags`.replace(/\/+/g, '/');
-  return url.toString();
-}
-
-function extractOllamaModels(data: unknown): ProviderModelOption[] {
-  const items = (data as { models?: unknown }).models;
-  if (!Array.isArray(items)) return [];
-  return uniqueModels(
-    items
-      .map((item) => {
-        const obj = item && typeof item === 'object'
-          ? item as { name?: unknown; model?: unknown }
-          : null;
-        const id =
-          typeof obj?.name === 'string' && obj.name.trim()
-            ? obj.name.trim()
-            : typeof obj?.model === 'string' && obj.model.trim()
-              ? obj.model.trim()
-              : '';
-        return id ? { id, label: id } : null;
-      })
-      .filter((item): item is ProviderModelOption => item != null),
-  );
-}
-
 function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, apiKey: string): string {
   if (protocol === 'openai' || protocol === 'senseaudio') {
     return appendVersionedApiPath(baseUrl, '/models');
@@ -189,12 +158,7 @@ function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, ap
     return url.toString();
   }
   if (protocol === 'google') {
-    const url = new URL(`${baseUrl.replace(/\/+$/, '')}/v1beta/models`);
-    url.searchParams.set('key', apiKey);
-    return url.toString();
-  }
-  if (protocol === 'ollama') {
-    return ollamaTagsUrl(baseUrl);
+    return googleProviderModelsUrl(baseUrl, apiKey);
   }
   throw new Error(`Unsupported protocol: ${protocol}`);
 }
@@ -204,16 +168,13 @@ function providerModelsHeaders(
   apiKey: string,
 ): Record<string, string> {
   if (protocol === 'openai' || protocol === 'senseaudio') {
-    return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
+    return { authorization: `Bearer ${apiKey}` };
   }
   if (protocol === 'anthropic') {
     return {
-      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     };
-  }
-  if (protocol === 'ollama') {
-    return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
   }
   return {};
 }
@@ -224,7 +185,6 @@ function extractModels(protocol: ConnectionTestProtocol, data: unknown): Provide
   if (protocol === 'openai' || protocol === 'senseaudio') return extractOpenAiModels(data);
   if (protocol === 'anthropic') return extractAnthropicModels(data);
   if (protocol === 'google') return extractGoogleModels(data);
-  if (protocol === 'ollama') return extractOllamaModels(data);
   return [];
 }
 
@@ -337,7 +297,7 @@ export async function listProviderModels(
     const kind = networkErrorToKind(err);
     const message = err instanceof Error ? err.message : String(err);
     const host = validated.parsed.hostname;
-    const scope = isTrustedLocalApiHost(host) ? 'local' : 'remote';
+    const scope = isLoopbackApiHost(host) ? 'local' : 'remote';
     console.warn(
       `[provider:models] ${input.protocol} ${scope} ${host} → ${kind} in ${latencyMs}ms ${redactSecrets(message, [input.apiKey])}`,
     );

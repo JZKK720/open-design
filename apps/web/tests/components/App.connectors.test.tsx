@@ -2,7 +2,6 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AppConfigResponse } from '@open-design/contracts';
 
 import { App } from '../../src/App';
 import type { AppConfig } from '../../src/types';
@@ -218,7 +217,7 @@ describe('App connectors settings flows', () => {
     mockedFetchAppVersionInfo.mockResolvedValue(null);
     mockedListProjects.mockResolvedValue([]);
     mockedListTemplates.mockResolvedValue([]);
-    mockedFetchDaemonConfig.mockResolvedValue({ config: {} });
+    mockedFetchDaemonConfig.mockResolvedValue({});
     mockedFetchComposioConfigFromDaemon.mockResolvedValue(null);
     mockedMergeDaemonConfig.mockImplementation((local) => local);
     mockedLoadConfig.mockReturnValue({ ...baseConfig });
@@ -252,7 +251,7 @@ describe('App connectors settings flows', () => {
   });
 
   it('does not show first-run privacy consent until daemon config hydration finishes', async () => {
-    let resolveDaemonConfig: (value: AppConfigResponse | null) => void = () => {};
+    let resolveDaemonConfig: (value: Record<string, never>) => void = () => {};
     mockedFetchDaemonConfig.mockReturnValue(
       new Promise((resolve) => {
         resolveDaemonConfig = resolve;
@@ -266,7 +265,7 @@ describe('App connectors settings flows', () => {
     });
     expect(container.querySelector('.privacy-consent-banner')).toBeNull();
 
-    resolveDaemonConfig({ config: {} });
+    resolveDaemonConfig({});
 
     await waitFor(() => {
       expect(container.querySelector('.privacy-consent-banner')).toBeTruthy();
@@ -303,9 +302,7 @@ describe('App connectors settings flows', () => {
     // privacy disclosure layered on top. The banner appears only after
     // onboardingCompleted flips to true (Skip and finish both flip it).
     mockedLoadConfig.mockReturnValue({ ...baseConfig, onboardingCompleted: false });
-    mockedFetchDaemonConfig.mockResolvedValue({
-      config: { onboardingCompleted: false },
-    });
+    mockedFetchDaemonConfig.mockResolvedValue({ onboardingCompleted: false });
 
     const { container } = render(<App />);
 

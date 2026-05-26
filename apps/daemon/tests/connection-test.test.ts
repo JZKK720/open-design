@@ -10,7 +10,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import {
   createAgentSink,
   isSmokeOkReply,
-  providerConnectionTimeoutMs,
   redactSecrets,
   resolveConnectionTestTimeoutMs,
   testAgentConnection,
@@ -272,14 +271,18 @@ describe('POST /api/provider/models', () => {
     });
   });
 
-  it('lists local Ollama tags without requiring an API key', async () => {
-    const fetchMock = passThroughOrUpstream((url, init) => {
-      expect(url).toBe('http://localhost:11434/api/tags');
-      expect((init?.headers as Record<string, string> | undefined)?.authorization).toBeUndefined();
+  it('does not double-append v1beta when listing Gemini models', async () => {
+    const fetchMock = passThroughOrUpstream((url) => {
+      expect(url).toBe(
+        'https://generativelanguage.googleapis.com/v1beta/models?key=goog-key',
+      );
       return jsonResponse({
         models: [
-          { name: 'gpt-oss:20b' },
-          { name: 'gemma4:e2b-it-q4_K_M' },
+          {
+            name: 'models/gemini-2.0-flash',
+            displayName: 'Gemini 2.0 Flash',
+            supportedGenerationMethods: ['generateContent'],
+          },
         ],
       });
     });
@@ -289,26 +292,16 @@ describe('POST /api/provider/models', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        protocol: 'ollama',
-        baseUrl: 'http://localhost:11434',
-        apiKey: '',
+        protocol: 'google',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        apiKey: 'goog-key',
       }),
     });
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(res.status).toBe(200);
-    expect(body).toMatchObject({
+
+    await expect(res.json()).resolves.toMatchObject({
       ok: true,
-      kind: 'success',
-      models: [
-        { id: 'gemma4:e2b-it-q4_K_M', label: 'gemma4:e2b-it-q4_K_M' },
-        { id: 'gpt-oss:20b', label: 'gpt-oss:20b' },
-      ],
+      models: [{ id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' }],
     });
-    expect(
-      fetchMock.mock.calls.some(
-        ([input]) => !String(input).startsWith(baseUrl),
-      ),
-    ).toBe(true);
   });
 
   it('lets unsupported contract protocols return a classified provider-models result', async () => {
@@ -319,9 +312,9 @@ describe('POST /api/provider/models', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        protocol: 'azure',
-        baseUrl: 'https://example.openai.azure.com',
-        apiKey: 'azure-key',
+        protocol: 'ollama',
+        baseUrl: 'https://ollama.com',
+        apiKey: 'ollama-key',
       }),
     });
     const body = (await res.json()) as Record<string, unknown>;
@@ -842,17 +835,8 @@ describe('POST /api/test/connection provider mode', () => {
     ).toBe(false);
   });
 
-  it('allows direct private IPv4 base URLs for local OpenAI-compatible providers', async () => {
-    const fetchMock = passThroughOrUpstream((url) => {
-      if (url.endsWith('/models')) {
-        return jsonResponse({
-          data: [{ id: 'local-model', object: 'model' }],
-        });
-      }
-      return jsonResponse({
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-      });
-    });
+  it('reports forbidden for an internal-IP base URL without calling fetch', async () => {
+    const fetchMock = passThroughOrUpstream(() => jsonResponse({}));
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await realFetch(`${baseUrl}/api/test/connection`, {
@@ -862,59 +846,19 @@ describe('POST /api/test/connection provider mode', () => {
         mode: 'provider',
         protocol: 'openai',
         baseUrl: 'http://192.168.1.5:8080/v1',
-        apiKey: '',
-        model: 'local-model',
+        apiKey: 'sk-good',
+        model: 'gpt-4o',
       }),
     });
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.ok).toBe(true);
-    expect(body.kind).toBe('success');
+    expect(body.ok).toBe(false);
+    expect(body.kind).toBe('forbidden');
+    // Internal-IP guard fires before any outbound fetch.
     expect(
       fetchMock.mock.calls.some(
         ([input]) => !String(input).startsWith(baseUrl),
       ),
-    ).toBe(true);
-  });
-
-  // Regression for the DNS-bypass SSRF gap flagged on PR #1176: provider
-  // mode must run the same resolved-IP check as the proxy/finalize paths
-  // so a public hostname pointing at a private address can't be fetched.
-  it('reports forbidden for hostnames that resolve to a private IP without calling fetch', async () => {
-    const fetchMock = passThroughOrUpstream(() => jsonResponse({}));
-    vi.stubGlobal('fetch', fetchMock);
-    const dnsSpy = vi
-      .spyOn(dnsPromises, 'lookup')
-      .mockImplementation((async (hostname: string) => {
-        if (hostname === 'rebind.example.test') {
-          return [{ address: '10.0.0.5', family: 4 }];
-        }
-        const err: NodeJS.ErrnoException = new Error('ENOTFOUND');
-        err.code = 'ENOTFOUND';
-        throw err;
-      }) as unknown as typeof dnsPromises.lookup);
-    try {
-      const res = await realFetch(`${baseUrl}/api/test/connection`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'provider',
-          protocol: 'openai',
-          baseUrl: 'https://rebind.example.test/v1',
-          apiKey: 'sk-good',
-          model: 'gpt-4o',
-        }),
-      });
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.ok).toBe(false);
-      expect(body.kind).toBe('forbidden');
-      expect(
-        fetchMock.mock.calls.some(
-          ([input]) => !String(input).startsWith(baseUrl),
-        ),
-      ).toBe(false);
-    } finally {
-      dnsSpy.mockRestore();
-    }
+    ).toBe(false);
   });
 
   // Regression for the DNS-bypass SSRF gap flagged on PR #1176: provider
@@ -1476,6 +1420,38 @@ describe('POST /api/test/connection provider mode', () => {
         baseUrl: 'https://generativelanguage.googleapis.com',
         apiKey: 'goog-key',
         model: 'gemini-2.0-flash',
+      }),
+    });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.sample).toBe('ok');
+    const upstream = fetchMock.mock.calls.find(
+      ([input]) => !String(input).startsWith(baseUrl),
+    );
+    expect(String(upstream![0])).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+    );
+  });
+
+  it('normalizes Gemini model ids and base URLs in the provider smoke test', async () => {
+    const fetchMock = passThroughOrUpstream(() =>
+      jsonResponse({
+        candidates: [
+          { content: { parts: [{ text: 'ok' }] } },
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await realFetch(`${baseUrl}/api/test/connection`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'provider',
+        protocol: 'google',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        apiKey: 'goog-key',
+        model: 'models/gemini-2.0-flash',
       }),
     });
     const body = (await res.json()) as Record<string, unknown>;
@@ -2494,6 +2470,141 @@ setInterval(() => {}, 1000);
     });
     expect(res.status).toBe(400);
   });
+
+  // Regression coverage for #2248: the daemon must return structured
+  // diagnostics next to the existing `kind`/`detail` strings so Settings
+  // and CLI consumers don't have to scrape the human-readable detail
+  // line to know what phase failed, which binary path was used, or what
+  // the child's exit metadata was. The legacy fields stay unchanged so
+  // older clients keep rendering.
+  it('attaches structured diagnostics on Claude smoke-test success (#2248)', async () => {
+    await withFakeClaude(
+      `
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  try {
+    JSON.parse(input.trim());
+    console.log(JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg_1',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+      },
+    }));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+});
+`,
+      async () => {
+        const result = await testAgentConnection({ agentId: 'claude' });
+
+        expect(result).toMatchObject({ ok: true, kind: 'success' });
+        expect(result.diagnostics).toBeDefined();
+        expect(result.diagnostics?.phase).toBe('connection_smoke_test');
+        // The binary path is whatever fake bin the test harness installed
+        // on PATH (a temp directory). All we want here is that the
+        // daemon actually fills it in, not that it matches an exact path.
+        expect(typeof result.diagnostics?.binaryPath).toBe('string');
+        expect(result.diagnostics?.binaryPath ?? '').toMatch(/claude/);
+        expect(result.diagnostics?.exitCode).toBe(0);
+      },
+    );
+  });
+
+  it('attaches structured diagnostics on Claude exit-failed (#2248)', async () => {
+    await withFakeClaude(
+      `console.error('boom-on-stderr'); process.exit(7);`,
+      async () => {
+        const result = await testAgentConnection({ agentId: 'claude' });
+
+        expect(result.ok).toBe(false);
+        // Back-compat: existing kind + detail keep their shape.
+        expect(typeof result.kind).toBe('string');
+        expect(typeof result.detail).toBe('string');
+        // New: structured fields are attached.
+        expect(result.diagnostics).toBeDefined();
+        expect(result.diagnostics?.phase).toBe('spawn');
+        expect(result.diagnostics?.exitCode).toBe(7);
+        expect(result.diagnostics?.stderrTail ?? '').toContain('boom-on-stderr');
+        expect(result.diagnostics?.binaryPath ?? '').toMatch(/claude/);
+      },
+    );
+  });
+
+  it('reports an early-phase diagnostics block when the agent CLI is missing (#2248)', async () => {
+    // Clear PATH so the daemon cannot locate `claude`. We restore the
+    // env in `finally` to avoid leaking the empty PATH to later tests.
+    // Depending on whether the resolver short-circuits or the spawn
+    // itself ENOENTs, the kind may be agent_not_installed or
+    // agent_spawn_failed and the phase may be 'binary_resolution' or
+    // 'spawn'. Both are valid "we never reached the smoke test" shapes
+    // — the actionable bit for the UI is that diagnostics arrived at
+    // all and that the phase is one of the two early values.
+    const oldPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      const result = await testAgentConnection({ agentId: 'claude' });
+      expect(result.ok).toBe(false);
+      expect(['agent_not_installed', 'agent_spawn_failed']).toContain(result.kind);
+      expect(result.diagnostics).toBeDefined();
+      expect(['binary_resolution', 'spawn']).toContain(result.diagnostics?.phase);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
+  it('attaches diagnostics when the preflight auth probe reports missing auth (#2248)', async () => {
+    // Cursor Agent's preflight `cursor-agent status` check rejects the
+    // smoke run before the daemon ever spawns the smoke prompt. The
+    // initial #2248 pass forgot to stamp diagnostics on that return
+    // path, which contradicted the "Always set on local agent test
+    // responses" contract in packages/contracts. Lock the contract,
+    // and additionally lock the probe's own stderr/exit metadata —
+    // without those, the diagnostics block would drop the only context
+    // a caller has on a missing-auth failure (no smoke spawn ever ran,
+    // so the smoke sink is empty).
+    await withFakeCursorAgent(
+      `
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('2026.05.07-test');
+  process.exit(0);
+}
+if (args[0] === 'models') {
+  console.log('auto');
+  process.exit(0);
+}
+if (args[0] === 'status') {
+  console.error('Not logged in');
+  process.exit(1);
+}
+console.error('smoke prompt should not run when status reports missing auth');
+process.exit(1);
+`,
+      async () => {
+        const result = await testAgentConnection({ agentId: 'cursor-agent' });
+        expect(result).toMatchObject({
+          ok: false,
+          kind: 'agent_auth_required',
+        });
+        expect(result.diagnostics).toBeDefined();
+        // Preflight runs after binary resolution but before the smoke
+        // spawn, so phase should still be 'binary_resolution'.
+        expect(result.diagnostics?.phase).toBe('binary_resolution');
+        expect(result.diagnostics?.binaryPath ?? '').toMatch(/cursor-agent/);
+        // The probe child wrote "Not logged in" on stderr and exited
+        // 1; both must propagate into diagnostics so Settings/CLI can
+        // render the structured auth-failure context.
+        expect(result.diagnostics?.stderrTail ?? '').toContain('Not logged in');
+        expect(result.diagnostics?.exitCode).toBe(1);
+      },
+    );
+  });
 });
 
 describe('connection test helpers', () => {
@@ -2635,33 +2746,6 @@ describe('connection test timeout overrides', () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it('extends trusted local Ollama provider probes when no explicit override is set', () => {
-    expect(
-      providerConnectionTimeoutMs(
-        'ollama',
-        new URL('http://host.docker.internal:11434'),
-        {},
-      ),
-    ).toBe(45_000);
-    expect(
-      providerConnectionTimeoutMs(
-        'ollama',
-        new URL('https://ollama.com'),
-        {},
-      ),
-    ).toBe(12_000);
-  });
-
-  it('lets the explicit provider timeout override win for local Ollama probes', () => {
-    expect(
-      providerConnectionTimeoutMs(
-        'ollama',
-        new URL('http://host.docker.internal:11434'),
-        { OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS: '30000' },
-      ),
-    ).toBe(30_000);
   });
 });
 

@@ -646,7 +646,7 @@ function createPendingHtml(): string {
   return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html>
   <head>
-    <title>CubeCloud Open Design</title>
+    <title>Open Design</title>
     <style>
       body {
         align-items: center;
@@ -678,7 +678,7 @@ function createPendingHtml(): string {
   <body>
     <main>
       ${logoDataUrl ? `<img src="${logoDataUrl}" alt="" />` : ""}
-    <h1>CubeCloud Open Design</h1>
+      <h1>Open Design</h1>
       <p>Waiting for the web runtime URL…</p>
     </main>
   </body>
@@ -1216,7 +1216,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     minHeight: 600,
     minWidth: 900,
     show: true,
-    title: "CubeCloud Open Design",
+    title: "Open Design",
     ...MAC_WINDOW_CHROME,
     webPreferences: {
       additionalArguments: osLocaleAdditionalArguments(options.osLocale),

@@ -3,16 +3,6 @@ export interface AgentModelPrefs {
   reasoning?: string;
 }
 
-export type AppMode = 'daemon' | 'api';
-
-export type ApiProtocol =
-  | 'anthropic'
-  | 'openai'
-  | 'azure'
-  | 'google'
-  | 'ollama'
-  | 'senseaudio';
-
 export type AgentCliEnvPrefs = Record<string, Record<string, string>>;
 
 export interface TelemetryPrefs {
@@ -52,17 +42,8 @@ export interface AppConfigPrefs {
   customInstructions?: string | null;
 }
 
-export interface AppConfigBootstrap {
-  mode?: AppMode;
-  baseUrl?: string;
-  model?: string;
-  apiProtocol?: ApiProtocol;
-  apiProviderBaseUrl?: string | null;
-}
-
 export interface AppConfigResponse {
   config: AppConfigPrefs;
-  bootstrap?: AppConfigBootstrap;
 }
 
 export type UpdateAppConfigRequest = Partial<AppConfigPrefs>;

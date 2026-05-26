@@ -13,11 +13,7 @@ import {
   it,
 } from 'vitest';
 
-import {
-  readAppConfig,
-  readAppConfigBootstrapFromEnv,
-  writeAppConfig,
-} from '../src/app-config.js';
+import { readAppConfig, writeAppConfig } from '../src/app-config.js';
 import { isLocalSameOrigin } from '../src/origin-validation.js';
 
 // Default telemetry preference applied when an existing config has no
@@ -41,37 +37,6 @@ describe('app-config', () => {
 
   afterEach(async () => {
     await rm(dataDir, { recursive: true, force: true });
-  });
-
-  describe('readAppConfigBootstrapFromEnv', () => {
-    it('accepts Ollama bootstrap defaults from env', () => {
-      expect(
-        readAppConfigBootstrapFromEnv({
-          OD_DEFAULT_MODE: 'api',
-          OD_DEFAULT_API_PROTOCOL: 'ollama',
-          OD_DEFAULT_API_BASE_URL: 'http://host.docker.internal:11434',
-          OD_DEFAULT_API_MODEL: 'qwen3.6:35b-a3b-q8_0',
-        }),
-      ).toEqual({
-        mode: 'api',
-        apiProtocol: 'ollama',
-        baseUrl: 'http://host.docker.internal:11434',
-        model: 'qwen3.6:35b-a3b-q8_0',
-        apiProviderBaseUrl: null,
-      });
-    });
-
-    it('ignores unknown bootstrap protocols', () => {
-      expect(
-        readAppConfigBootstrapFromEnv({
-          OD_DEFAULT_API_PROTOCOL: 'not-a-provider',
-          OD_DEFAULT_API_BASE_URL: 'http://host.docker.internal:11434',
-        }),
-      ).toEqual({
-        baseUrl: 'http://host.docker.internal:11434',
-        apiProviderBaseUrl: null,
-      });
-    });
   });
 
   describe('readAppConfig', () => {
@@ -166,27 +131,6 @@ describe('app-config', () => {
       expect(cfg.telemetry).toEqual({ metrics: true, content: false });
     });
 
-    it('drops legacy API bootstrap keys from stored config files', async () => {
-      await writeFile(
-        path.join(dataDir, 'app-config.json'),
-        JSON.stringify({
-          onboardingCompleted: true,
-          mode: 'api',
-          baseUrl: 'http://host.docker.internal:11434',
-          allowLocalApiBaseUrl: true,
-          model: 'qwen3.6:35B-3ab-q8_0',
-          apiProtocol: 'openai',
-          apiProviderBaseUrl: null,
-        }),
-      );
-
-      const cfg = await readAppConfig(dataDir);
-      expect(cfg).toEqual({
-        onboardingCompleted: true,
-        telemetry: DEFAULT_TELEMETRY,
-      });
-    });
-
     it('preserves omitted orbit.templateSkillId from legacy stored config', async () => {
       await writeFile(
         path.join(dataDir, 'app-config.json'),
@@ -199,6 +143,7 @@ describe('app-config', () => {
       );
 
       const cfg = await readAppConfig(dataDir);
+
       expect(cfg.orbit).toEqual({
         enabled: true,
         time: '09:30',

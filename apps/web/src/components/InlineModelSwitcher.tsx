@@ -120,7 +120,7 @@ export function InlineModelSwitcher({
   const chipPrimary =
     config.mode === 'daemon'
       ? currentAgent?.name ?? t('inlineSwitcher.noAgent')
-      : apiProtocolLabel(apiProtocol, config.baseUrl);
+      : apiProtocolLabel(apiProtocol);
   const chipModel =
     config.mode === 'daemon'
       ? currentModelLabel && currentModelId !== 'default'

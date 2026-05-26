@@ -48,18 +48,6 @@ function isLoopbackIpv4(hostname: string): boolean {
   return Boolean(parts && parts[0] === 127);
 }
 
-function isPrivateIpv4(hostname: string): boolean {
-  const parts = parseIpv4(hostname);
-  if (!parts) return false;
-  const [a, b] = parts;
-  return (
-    (a === 169 && b === 254) ||
-    a === 10 ||
-    (a === 192 && b === 168) ||
-    (a === 172 && b >= 16 && b <= 31)
-  );
-}
-
 function isBlockedIpv4(hostname: string): boolean {
   const parts = parseIpv4(hostname);
   if (!parts) return false;
@@ -109,11 +97,6 @@ export function isLoopbackApiHost(hostname: string): boolean {
   return Boolean(mapped && isLoopbackIpv4(mapped));
 }
 
-export function isTrustedLocalApiHost(hostname: string): boolean {
-  const host = normalizeBracketedIpv6(hostname);
-  return host === 'host.docker.internal' || isLoopbackApiHost(host) || isPrivateIpv4(host);
-}
-
 export function isBlockedExternalApiHostname(hostname: string): boolean {
   const host = normalizeBracketedIpv6(hostname);
   if (host === '::') return true;
@@ -135,7 +118,7 @@ export function validateBaseUrl(baseUrl: string): BaseUrlValidationResult {
     return { error: 'Only http/https allowed' };
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (!isTrustedLocalApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
+  if (!isLoopbackApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
     return { error: 'Internal IPs blocked', forbidden: true };
   }
   return { parsed };
@@ -155,6 +138,45 @@ export type ConnectionTestKind =
   | 'agent_auth_required'
   | 'agent_spawn_failed'
   | 'unknown';
+
+// Phase markers describing how far the local agent connection test
+// progressed before it produced its result. Used inside
+// `ConnectionTestResponse.diagnostics.phase` and intended to be stable
+// across daemon versions so Settings UI and CLI consumers can render
+// phase-aware copy without re-deriving it from the free-form `detail`
+// string. See issue #2248.
+export type ConnectionTestPhase =
+  | 'binary_resolution'
+  | 'version_probe'
+  | 'model_list'
+  | 'spawn'
+  | 'connection_smoke_test'
+  | 'output_parse';
+
+export interface ConnectionTestDiagnostics {
+  // How far the test progressed before producing the result. Always
+  // set on local agent test responses.
+  phase: ConnectionTestPhase;
+  // Absolute filesystem path of the executable the daemon actually
+  // attempted to run, when resolution succeeded.
+  binaryPath?: string;
+  // Best-effort version string captured during `version_probe`. Null
+  // when the CLI exposes no machine-parseable version output.
+  binaryVersion?: string | null;
+  // Child process exit metadata. Both fields keep the raw `code` /
+  // `signal` shape from `child_process` so consumers can distinguish
+  // a clean non-zero exit from a SIGTERM teardown. `signal` is typed as
+  // `string | null` (not `NodeJS.Signals`) so the generated `.d.ts`
+  // stays browser-safe — the daemon writes one of the
+  // `NodeJS.Signals` literals here but consumers never need to import
+  // ambient Node namespaces just to read an HTTP response shape.
+  exitCode?: number | null;
+  signal?: string | null;
+  // Last ~400 bytes of the child's streams, already passed through
+  // the daemon's secret redactor.
+  stdoutTail?: string;
+  stderrTail?: string;
+}
 
 export type ConnectionTestProtocol = 'anthropic' | 'openai' | 'azure' | 'google' | 'ollama' | 'senseaudio';
 
@@ -200,4 +222,11 @@ export interface ConnectionTestResponse {
   detectedExecutablePath?: string;
   usedExecutablePath?: string;
   usedExecutableSource?: 'configured' | 'path' | 'fallback_invalid' | 'fallback_failed';
+  // Structured diagnostics for the local agent connection test path
+  // (#2248). Optional and additive: existing consumers that only read
+  // `kind` and `detail` keep working unchanged. Populated on local
+  // agent test responses — including early failures that never reach
+  // the spawn step (unknown agent id, unresolved binary, preflight
+  // auth probe). Provider tests omit it.
+  diagnostics?: ConnectionTestDiagnostics;
 }

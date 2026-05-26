@@ -129,43 +129,17 @@ export async function persistComposioConfigChange(
 }
 
 export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppConfig {
-  const persisted = markCustomExecutionConfig(next, current);
   return {
-    ...persisted,
+    ...next,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
-    composio: persisted.composio
+    composio: next.composio
       ? {
           apiKey: '',
-          apiKeyConfigured: Boolean(persisted.composio.apiKeyConfigured),
-          apiKeyTail: persisted.composio.apiKeyTail ?? '',
+          apiKeyConfigured: Boolean(next.composio.apiKeyConfigured),
+          apiKeyTail: next.composio.apiKeyTail ?? '',
         }
-      : persisted.composio,
+      : next.composio,
   };
-}
-
-function executionConfigSnapshot(config: AppConfig) {
-  return {
-    mode: config.mode,
-    apiKey: config.apiKey,
-    baseUrl: config.baseUrl,
-    model: config.model,
-    apiProtocol: config.apiProtocol,
-    apiVersion: config.apiVersion,
-    byokImageModel: config.byokImageModel,
-    apiProviderBaseUrl: config.apiProviderBaseUrl ?? null,
-    apiProtocolConfigs: config.apiProtocolConfigs ?? {},
-    maxTokens: config.maxTokens,
-  };
-}
-
-export function markCustomExecutionConfig(next: AppConfig, current: AppConfig): AppConfig {
-  if (
-    JSON.stringify(executionConfigSnapshot(next))
-    === JSON.stringify(executionConfigSnapshot(current))
-  ) {
-    return next;
-  }
-  return { ...next, executionConfigSource: 'custom' };
 }
 
 /**
@@ -778,10 +752,7 @@ export function App() {
   // user had previously configured for the target protocol.
   const handleApiProtocolChange = useCallback(
     (protocol: ApiProtocol) => {
-      const next = markCustomExecutionConfig(
-        switchApiProtocolConfig(config, protocol),
-        config,
-      );
+      const next = switchApiProtocolConfig(config, protocol);
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);
@@ -794,10 +765,7 @@ export function App() {
   // mid-session without retyping their key.
   const handleApiModelChange = useCallback(
     (model: string) => {
-      const next = markCustomExecutionConfig(
-        updateCurrentApiProtocolConfig(config, { model }),
-        config,
-      );
+      const next = updateCurrentApiProtocolConfig(config, { model });
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);
@@ -806,7 +774,7 @@ export function App() {
   );
 
   const handleChangeDefaultDesignSystem = useCallback(
-    (designSystemId: string) => {
+    (designSystemId: string | null) => {
       const next = { ...config, designSystemId };
       saveConfig(next);
       void syncConfigToDaemon(next);
@@ -1406,6 +1374,8 @@ export function App() {
         onTouchProject={handleTouchProject}
         onProjectChange={handleProjectChange}
         onProjectsRefresh={refreshProjects}
+        onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
+        onDesignSystemsRefresh={refreshDesignSystems}
       />
     );
   } else {

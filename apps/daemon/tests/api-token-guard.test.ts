@@ -14,7 +14,7 @@
 
 import type http from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isOpenDaemonApiProbePath, startServer } from '../src/server.js';
+import { startServer } from '../src/server.js';
 
 const PREVIOUS_TOKEN = process.env.OD_API_TOKEN;
 const PREVIOUS_HOST  = process.env.OD_BIND_HOST;
@@ -75,17 +75,6 @@ describe('bearer middleware', () => {
     // is 127.0.0.1 → middleware short-circuits.
     const resp = await fetch(`${baseUrl}/api/plugins`);
     expect(resp.status).toBe(200);
-  });
-
-  it('recognizes open probe paths after the /api mount trims the prefix', () => {
-    expect(isOpenDaemonApiProbePath('/health')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/version')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/daemon/status')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/api/health')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/api/version')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/api/daemon/status')).toBe(true);
-    expect(isOpenDaemonApiProbePath('/plugins')).toBe(false);
-    expect(isOpenDaemonApiProbePath('/api/plugins')).toBe(false);
   });
 
   it('keeps health / version / daemon-status open without a bearer', async () => {
