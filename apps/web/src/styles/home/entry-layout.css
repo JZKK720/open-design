@@ -448,8 +448,8 @@
 .entry-nav-rail__logo {
   appearance: none;
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -484,10 +484,10 @@
 .entry-nav-rail__logo-img {
   position: absolute;
   inset: auto;
-  width: 30px;
-  height: 30px;
-  object-fit: cover;
-  border-radius: 8px;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 0;
   display: block;
   user-select: none;
   -webkit-user-drag: none;

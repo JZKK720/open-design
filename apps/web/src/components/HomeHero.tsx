@@ -630,7 +630,7 @@ export const HomeHero = forwardRef<HTMLTextAreaElement, Props>(function HomeHero
     <section className="home-hero" data-testid="home-hero">
       <div className="home-hero__brand" aria-hidden>
         <span className="home-hero__brand-mark">
-          <img src="/app-icon.svg" alt="" draggable={false} />
+          <img src="/cubecloud-icon.svg" alt="" draggable={false} />
         </span>
         <span className="home-hero__brand-name">Open Design</span>
       </div>

@@ -71,7 +71,7 @@ export function EntryNavRail({ view, onViewChange, onNewProject }: Props) {
           data-testid="entry-nav-logo"
         >
           <img
-            src="/app-icon.svg"
+            src="/cubecloud-icon.svg"
             alt=""
             className="entry-nav-rail__logo-img"
             draggable={false}

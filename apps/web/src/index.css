@@ -1449,8 +1449,8 @@ code {
 
 .topbar .brand-mark {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   align-items: center;
   justify-content: center;
@@ -1464,7 +1464,7 @@ code {
   height: 100%;
   object-fit: contain;
   display: block;
-  padding: 1px;
+  padding: 0;
   user-select: none;
   -webkit-user-drag: none;
 }
