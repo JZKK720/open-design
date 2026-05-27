@@ -10,9 +10,11 @@ interface Props {
   onBack?: () => void;
   backLabel?: string;
   showTrafficSpace?: boolean;
+  fileActionsBefore?: ReactNode;
 }
 
 export const APP_CHROME_FILE_ACTIONS_ID = 'app-chrome-file-actions';
+export const APP_CHROME_FILE_ACTIONS_SELECTOR = `#${APP_CHROME_FILE_ACTIONS_ID}`;
 
 export function AppChromeHeader({
   actions,
@@ -20,6 +22,7 @@ export function AppChromeHeader({
   onBack,
   backLabel,
   showTrafficSpace = true,
+  fileActionsBefore,
 }: Props) {
   const t = useT();
   const resolvedBackLabel = backLabel ?? t('project.backToProjects');
@@ -53,6 +56,7 @@ export function AppChromeHeader({
       ) : null}
       {children ? <div className="app-chrome-content">{children}</div> : null}
       <div className="app-chrome-drag" aria-hidden />
+      {fileActionsBefore ? fileActionsBefore : null}
       <div id={APP_CHROME_FILE_ACTIONS_ID} className="app-chrome-file-actions" />
       {actions ? <div className="app-chrome-actions">{actions}</div> : null}
     </header>
