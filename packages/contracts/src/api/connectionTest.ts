@@ -91,7 +91,15 @@ function ipv4MappedToDotted(hostname: string): string | null {
 
 export function isLoopbackApiHost(hostname: string): boolean {
   const host = normalizeBracketedIpv6(hostname);
-  if (host === 'localhost' || host === '::1') return true;
+  if (
+    host === 'localhost'
+    || host === '::1'
+    || host === 'host.docker.internal'
+    || host === 'gateway.docker.internal'
+    || host === 'host.containers.internal'
+  ) {
+    return true;
+  }
   if (isLoopbackIpv4(host)) return true;
   const mapped = ipv4MappedToDotted(host);
   return Boolean(mapped && isLoopbackIpv4(mapped));

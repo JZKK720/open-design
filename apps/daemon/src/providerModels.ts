@@ -167,7 +167,11 @@ function providerModelsHeaders(
   protocol: ConnectionTestProtocol,
   apiKey: string,
 ): Record<string, string> {
-  if (protocol === 'openai' || protocol === 'senseaudio') {
+  if (protocol === 'openai') {
+    const token = apiKey.trim();
+    return token ? { authorization: `Bearer ${token}` } : {};
+  }
+  if (protocol === 'senseaudio') {
     return { authorization: `Bearer ${apiKey}` };
   }
   if (protocol === 'anthropic') {

@@ -256,17 +256,20 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         'protocol must be one of anthropic|openai|azure|google|ollama|senseaudio',
       );
     }
+    const allowsEmptyApiKey = protocol === 'openai' || protocol === 'ollama';
     if (
       typeof body.baseUrl !== 'string' ||
       typeof body.apiKey !== 'string' ||
       !body.baseUrl.trim() ||
-      !body.apiKey.trim()
+      (!allowsEmptyApiKey && !body.apiKey.trim())
     ) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        'baseUrl and apiKey are required',
+        allowsEmptyApiKey
+          ? 'baseUrl is required'
+          : 'baseUrl and apiKey are required',
       );
     }
     try {
@@ -317,19 +320,22 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
             'protocol must be one of anthropic|openai|azure|google|ollama|senseaudio',
           );
         }
+        const allowsEmptyApiKey = protocol === 'openai' || protocol === 'ollama';
         if (
           typeof body.baseUrl !== 'string' ||
           typeof body.apiKey !== 'string' ||
           typeof body.model !== 'string' ||
           !body.baseUrl.trim() ||
-          !body.apiKey.trim() ||
+          (!allowsEmptyApiKey && !body.apiKey.trim()) ||
           !body.model.trim()
         ) {
           return sendApiError(
             res,
             400,
             'BAD_REQUEST',
-            'baseUrl, apiKey, and model are required',
+            allowsEmptyApiKey
+              ? 'baseUrl and model are required'
+              : 'baseUrl, apiKey, and model are required',
           );
         }
         try {

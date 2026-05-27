@@ -486,9 +486,13 @@ async function validateLocalOpenAiModel(
   const url = appendVersionedApiPath(String(input.baseUrl), '/models');
   let response: Response;
   try {
+    const headers: Record<string, string> = {};
+    if (typeof input.apiKey === 'string' && input.apiKey.trim()) {
+      headers.authorization = `Bearer ${String(input.apiKey)}`;
+    }
     response = await fetch(url, {
       method: 'GET',
-      headers: { authorization: `Bearer ${String(input.apiKey)}` },
+      headers,
       signal,
       redirect: 'error',
     });
@@ -530,6 +534,7 @@ interface ProviderCallShape {
 function buildProviderCall(input: ProviderTestRequest): ProviderCallShape {
   const baseUrl = String(input.baseUrl);
   const apiKey = String(input.apiKey);
+  const apiKeyTrimmed = apiKey.trim();
   const model = String(input.model);
   switch (input.protocol) {
     case 'anthropic':
@@ -569,12 +574,15 @@ function buildProviderCall(input: ProviderTestRequest): ProviderCallShape {
       // smoke test reuses the same call shape. We default the base URL
       // upstream-side in chat-routes; this layer assumes the caller passed
       // a concrete URL via the BYOK form.
+      const openAiLikeHeaders: Record<string, string> = {
+        'content-type': 'application/json',
+      };
+      if (apiKeyTrimmed) {
+        openAiLikeHeaders.authorization = `Bearer ${apiKeyTrimmed}`;
+      }
       return {
         url: appendVersionedApiPath(baseUrl, '/chat/completions'),
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
+        headers: openAiLikeHeaders,
         body: {
           model,
           ...buildOpenAIChatTokenParam(model, PROVIDER_MAX_TOKENS),
@@ -652,12 +660,15 @@ function buildProviderCall(input: ProviderTestRequest): ProviderCallShape {
     }
     case 'ollama': {
       const trimmedBase = baseUrl.replace(/\/+$/, '').replace(/\/api\/?$/, '');
+      const ollamaHeaders: Record<string, string> = {
+        'content-type': 'application/json',
+      };
+      if (apiKeyTrimmed) {
+        ollamaHeaders.authorization = `Bearer ${apiKeyTrimmed}`;
+      }
       return {
         url: `${trimmedBase}/api/chat`,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
+        headers: ollamaHeaders,
         body: {
           model,
           messages: [{ role: 'user', content: SMOKE_PROMPT }],
