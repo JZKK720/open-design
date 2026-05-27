@@ -653,12 +653,12 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
-    if (!baseUrl || !apiKey || !model) {
+    if (!baseUrl || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        'baseUrl, apiKey, and model are required',
+        'baseUrl and model are required',
       );
     }
 
@@ -792,12 +792,16 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const sse = createSseResponse(res);
     sse.send('start', { model });
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (typeof apiKey === 'string' && apiKey.trim()) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
       let response = await fetch(primaryUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify(payload),
         redirect: 'error',
       });
@@ -809,10 +813,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         );
         response = await fetch(fallbackUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
+          headers,
           body: JSON.stringify(payload),
           redirect: 'error',
         });
