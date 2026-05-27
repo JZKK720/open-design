@@ -72,3 +72,7 @@ docs/superpowers/
 apps/landing-page/public/previews/
 
 growth/**
+
+# Local prompt experiments and logo scratch assets.
+.github/prompts/
+assets/cubecloud-logos/icon-only/

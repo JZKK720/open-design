@@ -29,7 +29,14 @@ export function AppChromeHeader({
       {showTrafficSpace ? <div className="app-chrome-traffic-space" aria-hidden /> : null}
       <div className="app-chrome-brand" aria-label={APP_BRAND_NAME}>
         <span className="app-chrome-mark" aria-hidden>
-          <img src="/cubecloud-app-icon.svg" alt="" className="brand-mark-img" draggable={false} />
+          <img
+            src="/cubecloud-icon.svg"
+            alt=""
+            className="brand-mark-img"
+            width={20}
+            height={20}
+            draggable={false}
+          />
         </span>
         <span className="app-chrome-name">{APP_BRAND_NAME}</span>
       </div>

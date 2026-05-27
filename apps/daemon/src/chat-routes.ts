@@ -489,9 +489,27 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     // /v1/openai sub-path case. A naive "non-empty path → respect"
     // would break the /anthropic sub-path case. Matching `/vN` as a
     // segment anywhere in the path threads both correctly.
-    url.pathname = /\/v\d+(\/|$)/.test(trimmed)
-      ? `${trimmed}${path}`
-      : `${trimmed}/v1${path}`;
+    const hasVersionSegment = /\/v\d+(\/|$)/.test(trimmed);
+    const normalizedPath = path.replace(/^\/+/, '/');
+    if (trimmed.endsWith(normalizedPath)) {
+      url.pathname = trimmed;
+      return url.toString();
+    }
+    url.pathname = hasVersionSegment
+      ? `${trimmed}${normalizedPath}`
+      : `${trimmed}/v1${normalizedPath}`;
+    return url.toString();
+  };
+
+  const appendRawApiPath = (baseUrl: string, path: string) => {
+    const url = new URL(baseUrl);
+    const trimmed = url.pathname.replace(/\/+$/, '');
+    const normalizedPath = path.replace(/^\/+/, '/');
+    if (trimmed.endsWith(normalizedPath)) {
+      url.pathname = trimmed;
+    } else {
+      url.pathname = `${trimmed}${normalizedPath}`;
+    }
     return url.toString();
   };
 
@@ -750,7 +768,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
 
-    const url = appendVersionedApiPath(baseUrl, '/chat/completions');
+    const primaryUrl = appendVersionedApiPath(baseUrl, '/chat/completions');
+    const fallbackUrl = appendRawApiPath(baseUrl, '/chat/completions');
     console.log(
       `[proxy:openai] ${req.method} ${validated.parsed!.hostname} model=${model}`,
     );
@@ -773,7 +792,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     const sse = createSseResponse(res);
     sse.send('start', { model });
     try {
-      const response = await fetch(url, {
+      let response = await fetch(primaryUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -782,6 +801,22 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         body: JSON.stringify(payload),
         redirect: 'error',
       });
+
+      if (!response.ok && response.status === 404 && fallbackUrl !== primaryUrl) {
+        const firstErrorText = await response.text();
+        console.warn(
+          `[proxy:openai] primary path 404, retrying raw path. primary=${primaryUrl} fallback=${fallbackUrl} details=${redactAuthTokens(firstErrorText)}`,
+        );
+        response = await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          redirect: 'error',
+        });
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
