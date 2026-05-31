@@ -17,6 +17,7 @@ import {
 } from './byok-tools.js';
 import { isSafeId as isSafeProjectId } from './projects.js';
 import { projectKindToTracking } from '@open-design/contracts/analytics';
+import { isLoopbackApiHost } from '@open-design/contracts/api/connectionTest';
 import { proxyDispatcherRequestInit, validateBaseUrlResolved } from './connectionTest.js';
 import { googleStreamGenerateContentUrl } from './google-models.js';
 import { createRoleMarkerGuard } from './role-marker-guard.js';
@@ -316,13 +317,17 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
             'protocol must be one of anthropic|openai|azure|google|ollama|senseaudio',
           );
         }
+        const keylessLocalOpenAi =
+          protocol === 'openai' && isKeylessLocalOpenAiBaseUrl(body.baseUrl);
         if (
           typeof body.baseUrl !== 'string' ||
-          typeof body.apiKey !== 'string' ||
           typeof body.model !== 'string' ||
           !body.baseUrl.trim() ||
-          !body.apiKey.trim() ||
-          !body.model.trim()
+          !body.model.trim() ||
+          (!keylessLocalOpenAi && (
+            typeof body.apiKey !== 'string' ||
+            !body.apiKey.trim()
+          ))
         ) {
           return sendApiError(
             res,
@@ -335,7 +340,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
           const result = await testProviderConnection({
             protocol,
             baseUrl: body.baseUrl,
-            apiKey: body.apiKey,
+            apiKey: typeof body.apiKey === 'string' ? body.apiKey : '',
             model: body.model,
             apiVersion:
               typeof body.apiVersion === 'string' ? body.apiVersion : undefined,
@@ -450,6 +455,17 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   // same resolved-IP check before issuing the upstream request.
   const validateExternalApiBaseUrl = (baseUrl: string) => {
     return validateBaseUrlResolved(baseUrl);
+  };
+
+  const isKeylessLocalOpenAiBaseUrl = (baseUrl: unknown) => {
+    if (typeof baseUrl !== 'string' || !baseUrl.trim()) return false;
+    try {
+      const parsed = new URL(baseUrl.trim());
+      return ['http:', 'https:'].includes(parsed.protocol)
+        && isLoopbackApiHost(parsed.hostname);
+    } catch {
+      return false;
+    }
   };
 
   const proxyErrorCode = (status: number) => {
@@ -790,12 +806,12 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     if (rejectProxyPluginContext(proxyBody, res)) return;
     const { baseUrl, apiKey, model, systemPrompt, messages, maxTokens } =
       proxyBody;
-    if (!baseUrl || !apiKey || !model) {
+    if (!baseUrl || !model) {
       return sendApiError(
         res,
         400,
         'BAD_REQUEST',
-        'baseUrl, apiKey, and model are required',
+        'baseUrl and model are required',
       );
     }
 
@@ -806,6 +822,16 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         validated.forbidden ? 403 : 400,
         validated.forbidden ? 'FORBIDDEN' : 'BAD_REQUEST',
         validated.error,
+      );
+    }
+
+    const apiKeyTrimmed = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!apiKeyTrimmed && !isLoopbackApiHost(validated.parsed!.hostname)) {
+      return sendApiError(
+        res,
+        400,
+        'BAD_REQUEST',
+        'apiKey is required',
       );
     }
 

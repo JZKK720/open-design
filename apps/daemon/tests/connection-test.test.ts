@@ -1401,6 +1401,36 @@ describe('POST /api/test/connection provider mode', () => {
     );
   });
 
+  it('allows loopback OpenAI connection tests without an apiKey', async () => {
+    const fetchMock = passThroughOrUpstream((url, init) => {
+      expect(init?.headers).not.toHaveProperty('authorization');
+      if (url === 'http://host.docker.internal:11434/v1/models') {
+        return jsonResponse({
+          data: [{ id: 'nemotron3:33b-q8', object: 'model' }],
+        });
+      }
+      expect(url).toBe('http://host.docker.internal:11434/v1/chat/completions');
+      return jsonResponse({
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await realFetch(`${baseUrl}/api/test/connection`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'provider',
+        protocol: 'openai',
+        baseUrl: 'http://host.docker.internal:11434/v1',
+        model: 'nemotron3:33b-q8',
+      }),
+    });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.kind).toBe('success');
+  });
+
   it('keeps max_tokens for DeepSeek-style OpenAI-compatible connection tests', async () => {
     const fetchMock = passThroughOrUpstream((url) => {
       if (url === 'https://api.deepseek.com/v1/models') {

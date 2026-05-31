@@ -445,6 +445,36 @@ describe('API proxy routes', () => {
     );
   });
 
+  it('allows loopback API base URLs for local OpenAI-compatible providers without an apiKey', async () => {
+    const fetchMock = vi.fn((input: FetchInput, init?: FetchInit) => {
+      const url = String(input);
+      if (url.startsWith(baseUrl)) return realFetch(input, init);
+      expect(init?.headers).not.toHaveProperty('Authorization');
+      return Promise.resolve(sseResponse('data: [DONE]\n\n'));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await realFetch(`${baseUrl}/api/proxy/openai/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: 'http://host.docker.internal:11434/v1',
+        model: 'llama-local',
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.text()).resolves.toContain('event: end');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://host.docker.internal:11434/v1/chat/completions',
+      expect.objectContaining({
+        headers: { 'Content-Type': 'application/json' },
+        redirect: 'error',
+      }),
+    );
+  });
+
   it('allows IPv4-mapped loopback API base URLs for local OpenAI-compatible providers', async () => {
     const fetchMock = vi.fn((input: FetchInput, init?: FetchInit) => {
       const url = String(input);
