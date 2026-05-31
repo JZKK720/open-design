@@ -30,7 +30,8 @@
 //   * provider 'imagerouter'→ ImageRouter OpenAI-compatible image/video
 //                              generation endpoints
 //   * provider 'custom-image'→ user-supplied OpenAI-compatible
-//                              /v1/images/generations endpoint
+//                              /v1/images/generations + /v1/images/edits
+//                              endpoints
 //
 // The fallback stub handlers are gated behind OD_MEDIA_ALLOW_STUBS=1; in
 // release builds they throw StubProviderDisabledError (mapped to HTTP
@@ -70,6 +71,7 @@ const execFile = promisify(execFileCb);
 type ProviderConfig = { apiKey?: string; baseUrl?: string; model?: string };
 type ProgressFn = (message: string) => void;
 type ImageRef = { path: string; abs: string; mime: string; size: number; dataUrl: string };
+type MediaRequestInit = Pick<RequestInit, 'dispatcher'>;
 type MediaContext = {
   surface: MediaSurface;
   /**
@@ -108,6 +110,7 @@ type MediaContext = {
   promptInfluence: number | undefined;
   compositionDir: string | null;
   imageRef: ImageRef | null;
+  requestInit: MediaRequestInit;
 };
 type RenderResult = { bytes: Buffer; providerNote: string; suggestedExt?: string };
 type JsonRecord = Record<string, unknown>;
@@ -285,7 +288,7 @@ export async function generateMedia(args: {
   projectRoot: string; projectsRoot: string; projectId: string; surface: MediaSurface; model: string;
   prompt?: string; output?: string; aspect?: string; length?: number; duration?: number; voice?: string;
   audioKind?: AudioKind; language?: string; loop?: boolean; promptInfluence?: number;
-  compositionDir?: string; image?: string; onProgress?: ProgressFn;
+  compositionDir?: string; image?: string; onProgress?: ProgressFn; requestInit?: MediaRequestInit;
 }) {
   const {
     projectRoot,
@@ -305,6 +308,7 @@ export async function generateMedia(args: {
     promptInfluence,
     compositionDir,
     image,
+    requestInit,
   } = args;
 
   if (!projectRoot) throw new Error('projectRoot required');
@@ -323,27 +327,42 @@ export async function generateMedia(args: {
       `unsupported audioKind: ${audioKind}. Allowed: music | speech | sfx.`,
     );
   }
-  const def = findMediaModel(model);
+  // Arbitrary fal.ai model paths (e.g. "fal-ai/flux/dev") bypass the
+  // catalog so users can reach any model on fal without waiting for a
+  // catalog entry. Surface comes from the caller; no cross-surface guard
+  // is needed because the fal renderer reads ctx.surface directly.
+  let def = findMediaModel(model);
+  let isFalCustomPath = false;
   if (!def) {
-    throw new Error(
-      `unknown model: ${model}. Pass --model from the registered list (see /api/media/models).`,
-    );
+    if (/^fal-ai\//.test(model)) {
+      isFalCustomPath = true;
+      def = {
+        id: model,
+        label: model,
+        hint: 'Fal.ai',
+        provider: 'fal',
+        caps: surface === 'image' ? ['t2i'] : surface === 'video' ? ['t2v'] : [],
+      };
+    } else {
+      throw new Error(
+        `unknown model: ${model}. Pass --model from the registered list (see /api/media/models), ` +
+        `or pass a full fal-ai/* path (e.g. fal-ai/flux/dev) for any Fal model.`,
+      );
+    }
   }
-  // Reject cross-surface combinations (e.g. surface=image + model=seedance-2)
-  // here so the dispatcher never silently routes a video model id through
-  // the image renderer. We compare against the surface-specific list — for
-  // audio we further restrict to the kind-specific bucket so a `music`
-  // surface can't bill an `elevenlabs-v3` (speech) call.
+  // Reject cross-surface combinations for catalogued models.
   const resolvedAudioKind =
     surface === 'audio' ? audioKind || 'music' : undefined;
-  const allowed = modelsForSurface(surface, resolvedAudioKind);
-  if (!allowed.some((m) => m.id === model)) {
-    const ids = allowed.map((m) => m.id).join(', ');
-    const where =
-      surface === 'audio' ? `audio · ${resolvedAudioKind}` : surface;
-    throw new Error(
-      `model "${model}" is not registered for surface "${where}". Allowed: ${ids}.`,
-    );
+  if (!isFalCustomPath) {
+    const allowed = modelsForSurface(surface, resolvedAudioKind);
+    if (!allowed.some((m) => m.id === model)) {
+      const ids = allowed.map((m) => m.id).join(', ');
+      const where =
+        surface === 'audio' ? `audio · ${resolvedAudioKind}` : surface;
+      throw new Error(
+        `model "${model}" is not registered for surface "${where}". Allowed: ${ids}.`,
+      );
+    }
   }
 
   // Clamp registry-bound numeric inputs to their allowed buckets so a
@@ -414,6 +433,7 @@ export async function generateMedia(args: {
     // Resolved reference image for i2v / image-edit flows. `null` when
     // the agent didn't pass --image. See resolveProjectImage below.
     imageRef,
+    requestInit: requestInit || {},
   };
 
   const credentials = await resolveProviderConfig(projectRoot, def.provider);
@@ -570,6 +590,16 @@ export async function generateMedia(args: {
       bytes = result.bytes;
       providerNote = result.providerNote;
       suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'fal' && surface === 'image') {
+      const result = await renderFalImage(ctx, credentials);
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'fal' && surface === 'video') {
+      const result = await renderFalVideo(ctx, credentials, args.onProgress);
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
     } else {
       // No real renderer wired up for this (provider, surface). Gate the
       // stub fallback behind OD_MEDIA_ALLOW_STUBS so release builds don't
@@ -693,9 +723,19 @@ const openAIImageDispatcher = new UndiciAgent({
   bodyTimeout: OPENAI_IMAGE_BODY_TIMEOUT_MS,
 });
 
+function withMediaRequestInit(
+  ctx: Pick<MediaContext, 'requestInit'>,
+  init: RequestInit = {},
+): RequestInit {
+  return {
+    ...ctx.requestInit,
+    ...init,
+  };
+}
+
 async function renderOpenAIImage(ctx: MediaContext, credentials: ProviderConfig): Promise<RenderResult> {
   if (!credentials.apiKey) {
-    throw new Error('no OpenAI credential — configure an API key in Settings, set OPENAI_API_KEY, or refresh Codex/Hermes OAuth');
+    throw new Error('no OpenAI credential — configure an API key in Settings or set OPENAI_API_KEY');
   }
   const rawBase = credentials.baseUrl || 'https://api.openai.com/v1';
   const azure = detectAzureEndpoint(rawBase);
@@ -737,12 +777,14 @@ async function renderOpenAIImage(ctx: MediaContext, credentials: ProviderConfig)
     headers['api-key'] = credentials.apiKey;
   }
 
-  const resp = await fetch(url, {
+  const resp = await fetch(url, withMediaRequestInit(ctx, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    dispatcher: openAIImageDispatcher as unknown as NonNullable<RequestInit['dispatcher']>,
-  });
+    dispatcher: ctx.requestInit.dispatcher
+      ?? openAIImageDispatcher as unknown as NonNullable<RequestInit['dispatcher']>,
+    signal: AbortSignal.timeout(Math.max(OPENAI_IMAGE_HEADERS_TIMEOUT_MS, OPENAI_IMAGE_BODY_TIMEOUT_MS)),
+  }));
   const text = await resp.text();
   if (!resp.ok) {
     const tag = azure ? 'azure-openai' : 'openai';
@@ -760,7 +802,7 @@ async function renderOpenAIImage(ctx: MediaContext, credentials: ProviderConfig)
   if (entry.b64_json) {
     bytes = Buffer.from(entry.b64_json, 'base64');
   } else if (entry.url) {
-    const imgResp = await fetch(entry.url);
+    const imgResp = await fetch(entry.url, withMediaRequestInit(ctx));
     if (!imgResp.ok) throw new Error(`openai image fetch ${imgResp.status}`);
     const arr = await imgResp.arrayBuffer();
     bytes = Buffer.from(arr);
@@ -794,16 +836,16 @@ async function renderImageRouterImage(ctx: MediaContext, credentials: ProviderCo
     output_format: 'png',
   };
 
-  const resp = await fetch(url, {
+  const resp = await fetch(url, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const data = await parseOpenAICompatibleJson(resp, 'imagerouter image');
-  const bytes = await bytesFromOpenAICompatibleData(data, 'imagerouter image');
+  const bytes = await bytesFromOpenAICompatibleData(data, 'imagerouter image', ctx.requestInit);
   return {
     bytes,
     providerNote: `imagerouter/${wireModel} · ${imageRouterSizeFor(ctx.aspect, 'image')} · ${bytes.length} bytes`,
@@ -829,16 +871,16 @@ async function renderImageRouterVideo(ctx: MediaContext, credentials: ProviderCo
     response_format: 'b64_json',
   };
 
-  const resp = await fetch(url, {
+  const resp = await fetch(url, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const data = await parseOpenAICompatibleJson(resp, 'imagerouter video');
-  const bytes = await bytesFromOpenAICompatibleData(data, 'imagerouter video');
+  const bytes = await bytesFromOpenAICompatibleData(data, 'imagerouter video', ctx.requestInit);
   return {
     bytes,
     providerNote: `imagerouter/${wireModel} · ${imageRouterSizeFor(ctx.aspect, 'video')} · ${seconds === 'auto' ? 'auto' : `${seconds}s`} · ${bytes.length} bytes`,
@@ -850,7 +892,7 @@ async function renderCustomOpenAIImage(ctx: MediaContext, credentials: ProviderC
   const baseUrl = (credentials.baseUrl || '').trim();
   if (!baseUrl) {
     throw new Error(
-      'Custom Image API base URL required — configure a /v1/images/generations compatible endpoint in Settings',
+      'Custom Image API base URL required — configure an OpenAI-compatible /v1/images/generations or /v1/images/edits endpoint in Settings',
     );
   }
   const wireModel = (
@@ -875,14 +917,20 @@ async function renderCustomOpenAIImage(ctx: MediaContext, credentials: ProviderC
     n: 1,
     size: openaiSizeFor('gpt-image-1', ctx.aspect),
   };
+  let url = buildOpenAIImageUrl(baseUrl, false);
+  if (ctx.imageRef?.dataUrl) {
+    body.response_format = 'b64_json';
+    body.images = [{ image_url: ctx.imageRef.dataUrl }];
+    url = buildOpenAIImageEditUrl(baseUrl);
+  }
 
-  const resp = await fetch(buildOpenAIImageUrl(baseUrl, false), {
+  const resp = await fetch(url, withMediaRequestInit(ctx, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-  });
+  }));
   const data = await parseOpenAICompatibleJson(resp, 'custom image');
-  const bytes = await bytesFromOpenAICompatibleData(data, 'custom image');
+  const bytes = await bytesFromOpenAICompatibleData(data, 'custom image', ctx.requestInit);
   return {
     bytes,
     providerNote: `custom-image/${wireModel} · ${body.size} · ${bytes.length} bytes`,
@@ -912,7 +960,7 @@ async function parseOpenAICompatibleJson(resp: Response, providerTag: string): P
   }
 }
 
-async function bytesFromOpenAICompatibleData(data: any, providerTag: string): Promise<Buffer> {
+async function bytesFromOpenAICompatibleData(data: any, providerTag: string, requestInit: MediaRequestInit = {}): Promise<Buffer> {
   const entry = data && Array.isArray(data.data) ? data.data[0] : null;
   if (!entry) throw new Error(`${providerTag} response had no data[0]`);
   if (typeof entry.b64_json === 'string' && entry.b64_json) {
@@ -922,7 +970,7 @@ async function bytesFromOpenAICompatibleData(data: any, providerTag: string): Pr
     return Buffer.from(raw, 'base64');
   }
   if (typeof entry.url === 'string' && entry.url) {
-    const mediaResp = await fetch(entry.url);
+    const mediaResp = await fetch(entry.url, requestInit);
     if (!mediaResp.ok) {
       throw new Error(`${providerTag} media fetch ${mediaResp.status}`);
     }
@@ -972,19 +1020,34 @@ function detectAzureEndpoint(baseUrl: string): boolean {
  * appending the default api-version for Azure when the user didn't
  * specify one. Returns a string ready for `fetch`.
  */
+function normalizeOpenAICompatiblePath(pathname: string, endpoint: 'images' | 'videos', mode: 'generations' | 'edits'): string {
+  const strippedPath = pathname.replace(/\/+$/, '');
+  const generationsSuffix = `/${endpoint}/generations`;
+  const editsSuffix = endpoint === 'images' ? '/images/edits' : null;
+  if (strippedPath.endsWith(generationsSuffix)) {
+    if (mode === 'generations') return strippedPath;
+    return endpoint === 'images'
+      ? `${strippedPath.slice(0, -generationsSuffix.length)}${editsSuffix}`
+      : strippedPath;
+  }
+  if (editsSuffix && strippedPath.endsWith(editsSuffix)) {
+    if (mode === 'edits') return strippedPath;
+    return `${strippedPath.slice(0, -editsSuffix.length)}${generationsSuffix}`;
+  }
+  return mode === 'edits' && editsSuffix
+    ? `${strippedPath}${editsSuffix}`
+    : `${strippedPath}${generationsSuffix}`;
+}
+
 function buildOpenAICompatibleGenerationUrl(baseUrl: string, endpoint: 'images' | 'videos'): string {
-  const suffix = `/${endpoint}/generations`;
   let parsed;
   try {
     parsed = new URL(baseUrl);
   } catch {
     const stripped = baseUrl.replace(/\/$/, '');
-    return stripped.endsWith(suffix) ? stripped : `${stripped}${suffix}`;
+    return normalizeOpenAICompatiblePath(stripped, endpoint, 'generations');
   }
-  const strippedPath = parsed.pathname.replace(/\/+$/, '');
-  if (!strippedPath.endsWith(suffix)) {
-    parsed.pathname = `${strippedPath}${suffix}`;
-  }
+  parsed.pathname = normalizeOpenAICompatiblePath(parsed.pathname, endpoint, 'generations');
   return parsed.toString();
 }
 
@@ -1000,6 +1063,18 @@ function buildOpenAIImageUrl(baseUrl: string, isAzure: boolean): string {
   if (isAzure && !parsed.searchParams.has('api-version')) {
     parsed.searchParams.set('api-version', AZURE_DEFAULT_API_VERSION);
   }
+  return parsed.toString();
+}
+
+function buildOpenAIImageEditUrl(baseUrl: string): string {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    const stripped = baseUrl.replace(/\/$/, '');
+    return normalizeOpenAICompatiblePath(stripped, 'images', 'edits');
+  }
+  parsed.pathname = normalizeOpenAICompatiblePath(parsed.pathname, 'images', 'edits');
   return parsed.toString();
 }
 
@@ -1067,7 +1142,7 @@ function openaiSpeechFormatFor(fileName: string): string {
 
 async function renderOpenAISpeech(ctx: MediaContext, credentials: ProviderConfig, fileName: string): Promise<RenderResult> {
   if (!credentials.apiKey) {
-    throw new Error('no OpenAI credential — configure an API key in Settings, set OPENAI_API_KEY, or refresh Codex/Hermes OAuth');
+    throw new Error('no OpenAI credential — configure an API key in Settings or set OPENAI_API_KEY');
   }
   const rawBase = credentials.baseUrl || 'https://api.openai.com/v1';
   const azure = detectAzureEndpoint(rawBase);
@@ -1109,11 +1184,11 @@ async function renderOpenAISpeech(ctx: MediaContext, credentials: ProviderConfig
     headers['api-key'] = credentials.apiKey;
   }
 
-  const resp = await fetch(url, {
+  const resp = await fetch(url, withMediaRequestInit(ctx, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-  });
+  }));
   if (!resp.ok) {
     const text = await resp.text();
     const tag = azure ? 'azure-openai' : 'openai';
@@ -1187,14 +1262,14 @@ async function renderVolcengineVideo(ctx: MediaContext, credentials: ProviderCon
     content,
   };
 
-  const taskResp = await fetch(`${baseUrl}/contents/generations/tasks`, {
+  const taskResp = await fetch(`${baseUrl}/contents/generations/tasks`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(taskBody),
-  });
+  }));
   const taskText = await taskResp.text();
   if (!taskResp.ok) {
     throw new Error(`volcengine task create ${taskResp.status}: ${truncate(taskText, 240)}`);
@@ -1231,9 +1306,9 @@ async function renderVolcengineVideo(ctx: MediaContext, credentials: ProviderCon
   }
   while (Date.now() - startedAt < maxMs) {
     await sleep(4000);
-    const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${encodeURIComponent(taskId)}`, {
+    const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${encodeURIComponent(taskId)}`, withMediaRequestInit(ctx, {
       headers: { 'authorization': `Bearer ${credentials.apiKey}` },
-    });
+    }));
     const pollText = await pollResp.text();
     if (!pollResp.ok) {
       throw new Error(`volcengine poll ${pollResp.status}: ${truncate(pollText, 240)}`);
@@ -1266,7 +1341,7 @@ async function renderVolcengineVideo(ctx: MediaContext, credentials: ProviderCon
     throw new Error(`volcengine task did not finish in time (last status: ${lastStatus || 'unknown'})`);
   }
 
-  const dlResp = await fetch(videoUrl);
+  const dlResp = await fetch(videoUrl, withMediaRequestInit(ctx));
   if (!dlResp.ok) throw new Error(`volcengine video fetch ${dlResp.status}`);
   const arr = await dlResp.arrayBuffer();
   const bytes = Buffer.from(arr);
@@ -1305,14 +1380,14 @@ async function renderVolcengineImage(ctx: MediaContext, credentials: ProviderCon
     // wire name. lefarcen + codex P2 on PR #1309.
     size: openaiSizeFor(ctx.model, ctx.aspect),
   };
-  const resp = await fetch(`${baseUrl}/images/generations`, {
+  const resp = await fetch(`${baseUrl}/images/generations`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`volcengine image ${resp.status}: ${truncate(text, 240)}`);
@@ -1329,7 +1404,7 @@ async function renderVolcengineImage(ctx: MediaContext, credentials: ProviderCon
   if (entry.b64_json) {
     bytes = Buffer.from(entry.b64_json, 'base64');
   } else if (entry.url) {
-    const imgResp = await fetch(entry.url);
+    const imgResp = await fetch(entry.url, withMediaRequestInit(ctx));
     if (!imgResp.ok) throw new Error(`volcengine image fetch ${imgResp.status}`);
     bytes = Buffer.from(await imgResp.arrayBuffer());
   } else {
@@ -1376,14 +1451,14 @@ async function renderGrokImage(ctx: MediaContext, credentials: ProviderConfig): 
     aspect_ratio: aspectRatio,
     response_format: 'b64_json',
   };
-  const resp = await fetch(`${baseUrl}/images/generations`, {
+  const resp = await fetch(`${baseUrl}/images/generations`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`grok image ${resp.status}: ${truncate(text, 240)}`);
@@ -1400,7 +1475,7 @@ async function renderGrokImage(ctx: MediaContext, credentials: ProviderConfig): 
   if (entry.b64_json) {
     bytes = Buffer.from(entry.b64_json, 'base64');
   } else if (entry.url) {
-    const imgResp = await fetch(entry.url);
+    const imgResp = await fetch(entry.url, withMediaRequestInit(ctx));
     if (!imgResp.ok) throw new Error(`grok image fetch ${imgResp.status}`);
     bytes = Buffer.from(await imgResp.arrayBuffer());
   } else {
@@ -1442,11 +1517,11 @@ async function renderNanoBananaImage(ctx: MediaContext, credentials: ProviderCon
     },
   };
 
-  const resp = await fetch(`${baseUrl}/v1beta/models/${encodeURIComponent(wireModel)}:generateContent`, {
+  const resp = await fetch(`${baseUrl}/v1beta/models/${encodeURIComponent(wireModel)}:generateContent`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: nanoBananaHeaders(baseUrl, credentials.apiKey),
     body: JSON.stringify(body),
-  });
+  }));
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`nano-banana image ${resp.status}: ${truncate(text, 240)}`);
@@ -1583,14 +1658,14 @@ async function renderLeonardoImage(ctx: MediaContext, credentials: ProviderConfi
     ...(requiresContrast ? { contrast: 3.5 } : {}),
   };
   
-  const submitResp = await fetch(`${baseUrl}/generations`, {
+  const submitResp = await fetch(`${baseUrl}/generations`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   
   const submitText = await submitResp.text();
   if (!submitResp.ok) {
@@ -1618,11 +1693,11 @@ async function renderLeonardoImage(ctx: MediaContext, credentials: ProviderConfi
   while (Date.now() - startedAt < maxPollMs) {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     
-    const pollResp = await fetch(`${baseUrl}/generations/${generationId}`, {
+    const pollResp = await fetch(`${baseUrl}/generations/${generationId}`, withMediaRequestInit(ctx, {
       headers: {
         'authorization': `Bearer ${credentials.apiKey}`,
       },
-    });
+    }));
     
     if (!pollResp.ok) {
       throw new Error(`leonardo.ai poll ${pollResp.status}`);
@@ -1647,7 +1722,7 @@ async function renderLeonardoImage(ctx: MediaContext, credentials: ProviderConfi
   }
   
   // Fetch the generated image
-  const imgResp = await fetch(imageUrl);
+  const imgResp = await fetch(imageUrl, withMediaRequestInit(ctx));
   if (!imgResp.ok) {
     throw new Error(`leonardo.ai image fetch ${imgResp.status}`);
   }
@@ -1691,14 +1766,14 @@ async function renderGrokVideo(ctx: MediaContext, credentials: ProviderConfig, o
     body.image = ctx.imageRef.dataUrl;
   }
 
-  const submitResp = await fetch(`${baseUrl}/videos/generations`, {
+  const submitResp = await fetch(`${baseUrl}/videos/generations`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       'authorization': `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const submitText = await submitResp.text();
   if (!submitResp.ok) {
     throw new Error(`grok video submit ${submitResp.status}: ${truncate(submitText, 240)}`);
@@ -1731,9 +1806,9 @@ async function renderGrokVideo(ctx: MediaContext, credentials: ProviderConfig, o
     }
     while (Date.now() - startedAt < maxMs) {
       await sleep(4000);
-      const pollResp = await fetch(`${baseUrl}/videos/${encodeURIComponent(requestId)}`, {
+      const pollResp = await fetch(`${baseUrl}/videos/${encodeURIComponent(requestId)}`, withMediaRequestInit(ctx, {
         headers: { 'authorization': `Bearer ${credentials.apiKey}` },
-      });
+      }));
       const pollText = await pollResp.text();
       if (!pollResp.ok) {
         throw new Error(`grok poll ${pollResp.status}: ${truncate(pollText, 240)}`);
@@ -1785,7 +1860,7 @@ async function renderGrokVideo(ctx: MediaContext, credentials: ProviderConfig, o
     );
   }
 
-  const dlResp = await fetch(videoUrl);
+  const dlResp = await fetch(videoUrl, withMediaRequestInit(ctx));
   if (!dlResp.ok) throw new Error(`grok video fetch ${dlResp.status}`);
   const arr = await dlResp.arrayBuffer();
   const bytes = Buffer.from(arr);
@@ -1854,14 +1929,14 @@ async function renderXAITTS(ctx: MediaContext, credentials: ProviderConfig): Pro
     language,
   };
 
-  const resp = await fetch(`${baseUrl}/tts`, {
+  const resp = await fetch(`${baseUrl}/tts`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
     throw new Error(`xai tts ${resp.status}: ${truncate(errText, 240)}`);
@@ -1957,14 +2032,14 @@ async function renderElevenLabsTTS(ctx: MediaContext, credentials: ProviderConfi
 
   const resp = await fetch(
     `${baseUrl}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
-    {
+    withMediaRequestInit(ctx, {
       method: 'POST',
       headers: {
         'xi-api-key': credentials.apiKey,
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),
-    },
+    }),
   );
   if (!resp.ok) {
     const errText = await resp.text();
@@ -2008,14 +2083,14 @@ async function renderElevenLabsSfx(ctx: MediaContext, credentials: ProviderConfi
 
   const resp = await fetch(
     `${baseUrl}/v1/sound-generation?output_format=mp3_44100_128`,
-    {
+    withMediaRequestInit(ctx, {
       method: 'POST',
       headers: {
         'xi-api-key': credentials.apiKey,
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),
-    },
+    }),
   );
   if (!resp.ok) {
     const errText = await resp.text();
@@ -2099,14 +2174,14 @@ async function renderMinimaxTTS(ctx: MediaContext, credentials: ProviderConfig):
     },
   };
 
-  const resp = await fetch(`${baseUrl}/t2a_v2`, {
+  const resp = await fetch(`${baseUrl}/t2a_v2`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const respText = await resp.text();
   if (!resp.ok) {
     throw new Error(`minimax tts ${resp.status}: ${truncate(respText, 240)}`);
@@ -2204,14 +2279,14 @@ async function renderSenseAudioTTS(ctx: MediaContext, credentials: ProviderConfi
     },
   };
 
-  const resp = await fetch(`${baseUrl}/v1/t2a_v2`, {
+  const resp = await fetch(`${baseUrl}/v1/t2a_v2`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const respText = await resp.text();
   if (!resp.ok) {
     throw new Error(`senseaudio tts ${resp.status}: ${truncate(respText, 240)}`);
@@ -2315,14 +2390,14 @@ async function renderSenseAudioImage(ctx: MediaContext, credentials: ProviderCon
     body.reference = reference;
   }
 
-  const resp = await fetch(`${baseUrl}/v1/image/sync`, {
+  const resp = await fetch(`${baseUrl}/v1/image/sync`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   const respText = await resp.text();
   if (!resp.ok) {
     throw new Error(`senseaudio image ${resp.status}: ${truncate(respText, 240)}`);
@@ -2358,7 +2433,7 @@ async function renderSenseAudioImage(ctx: MediaContext, credentials: ProviderCon
   if (!urlCheck.ok) {
     throw new Error(`senseaudio image ${urlCheck.error}`);
   }
-  const imgResp = await fetch(url, { redirect: 'error' });
+  const imgResp = await fetch(url, withMediaRequestInit(ctx, { redirect: 'error' }));
   if (!imgResp.ok) {
     throw new Error(`senseaudio image fetch ${imgResp.status}`);
   }
@@ -2424,14 +2499,14 @@ async function renderFishAudioTTS(ctx: MediaContext, credentials: ProviderConfig
     body.reference_id = ctx.voice.trim();
   }
 
-  const resp = await fetch(`${baseUrl}/v1/tts`, {
+  const resp = await fetch(`${baseUrl}/v1/tts`, withMediaRequestInit(ctx, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${credentials.apiKey}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }));
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`fishaudio tts ${resp.status}: ${truncate(errText, 240)}`);
@@ -2445,6 +2520,270 @@ async function renderFishAudioTTS(ctx: MediaContext, credentials: ProviderConfig
     bytes,
     providerNote: `fishaudio/${wireModel} · ${bytes.length} bytes`,
     suggestedExt: '.mp3',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Provider: Fal.ai — generic queue-based renderer for image + video.
+//
+// Queue protocol (raw HTTP, no SDK):
+//   POST https://queue.fal.run/{endpoint}          body: flat model input (no wrapper)
+//   GET  {status_url}?logs=0                       → { status: QUEUED|IN_PROGRESS|COMPLETED|FAILED }
+//   GET  {response_url}                            → result payload
+//
+// Image result shape: { images: [{ url, content_type }] }
+// Video result shape: { video: { url } } or { videos: [{ url }] }
+//
+// Endpoint resolution: FAL_ENDPOINTS maps catalogue IDs to their fal-ai/*
+// path. Any model ID not in the map is used verbatim — this is what
+// enables arbitrary "fal-ai/..." custom paths without catalog entries.
+// ---------------------------------------------------------------------------
+
+const FAL_ENDPOINTS: Record<string, string> = {
+  'sd-3.5':              'fal-ai/stable-diffusion-v35-large',
+  'flux-pro-ultra':      'fal-ai/flux-pro/v1.1-ultra',
+  'flux-dev-fal':        'fal-ai/flux/dev',
+  'flux-schnell-fal':    'fal-ai/flux/schnell',
+  'ideogram-v3-fal':     'fal-ai/ideogram/v3',
+  'recraft-v3-fal':      'fal-ai/recraft-v3',
+  'sora-2':              'fal-ai/sora',
+  'sora-2-pro':          'fal-ai/sora',
+  'veo-3-fal':           'fal-ai/veo3',
+  'veo-2-fal':           'fal-ai/veo2',
+  'wan-2.1-t2v':         'fal-ai/wan-t2v',
+  'wan-2.1-i2v':         'fal-ai/wan-i2v',
+  'seedance-1-pro-fal':  'fal-ai/bytedance/seedance-1-pro',
+  'kling-2.1-t2v-fal':   'fal-ai/kling-video/v2.1/master/text-to-video',
+};
+
+// Image models that expect `aspect_ratio` (e.g. "16:9") instead of the
+// named `image_size` enum ("landscape_16_9") used by FLUX Dev/Schnell/SD.
+const FAL_IMAGE_USES_ASPECT_RATIO = new Set([
+  'fal-ai/flux-pro/v1.1-ultra',
+  'fal-ai/flux-pro/v1.1',
+]);
+
+const FAL_IMAGE_SIZES: Record<string, string> = {
+  '1:1':  'square_hd',
+  '16:9': 'landscape_16_9',
+  '9:16': 'portrait_16_9',
+  '4:3':  'landscape_4_3',
+  '3:4':  'portrait_4_3',
+};
+
+// Video models that do not accept a duration field at all.
+const FAL_VIDEO_NO_DURATION = new Set([
+  'fal-ai/wan-t2v',
+  'fal-ai/wan-i2v',
+]);
+
+// Video models that expect duration as a suffixed string ("4s"/"6s"/"8s") and
+// only accept those specific buckets.
+const FAL_VIDEO_STRING_DURATION = new Set([
+  'fal-ai/veo3',
+  'fal-ai/veo2',
+]);
+
+// Valid Veo duration buckets (seconds). Nearest-bucket clamp applied below.
+const FAL_VEO_DURATION_BUCKETS = [4, 6, 8];
+
+async function falQueueRun(
+  endpoint: string,
+  queueBase: string,
+  apiKey: string,
+  input: Record<string, unknown>,
+  maxMs: number,
+  onProgress?: ProgressFn,
+  modelLabel?: string,
+): Promise<any> {
+  const authHeader = { 'authorization': `Key ${apiKey}` };
+
+  const submitResp = await fetch(`${queueBase}/${endpoint}`, {
+    method: 'POST',
+    headers: { ...authHeader, 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const submitText = await submitResp.text();
+  if (!submitResp.ok) {
+    throw new Error(`fal submit ${submitResp.status}: ${truncate(submitText, 240)}`);
+  }
+  let submitData: any;
+  try { submitData = JSON.parse(submitText); } catch {
+    throw new Error(`fal submit non-JSON: ${truncate(submitText, 200)}`);
+  }
+  const requestId: string = submitData?.request_id;
+  if (!requestId) {
+    throw new Error(`fal submit missing request_id: ${truncate(submitText, 200)}`);
+  }
+
+  // Prefer the URLs returned by the submit response; fall back to the
+  // well-known model-agnostic queue paths as a safety net.
+  const statusUrl = submitData.status_url
+    ?? `${queueBase}/requests/${encodeURIComponent(requestId)}/status?logs=0`;
+  const resultUrl = submitData.response_url
+    ?? `${queueBase}/requests/${encodeURIComponent(requestId)}`;
+  const startedAt = Date.now();
+  let lastStatus = '';
+
+  if (onProgress) {
+    onProgress(`fal ${modelLabel || endpoint} task ${requestId.slice(0, 8)} accepted; polling…`);
+  }
+
+  let firstPoll = true;
+  while (Date.now() - startedAt < maxMs) {
+    if (!firstPoll) await sleep(3000);
+    firstPoll = false;
+    const statusResp = await fetch(statusUrl, { headers: authHeader });
+    const statusText = await statusResp.text();
+    if (!statusResp.ok) {
+      throw new Error(`fal poll ${statusResp.status}: ${truncate(statusText, 240)}`);
+    }
+    let statusData: any;
+    try { statusData = JSON.parse(statusText); } catch {
+      throw new Error(`fal poll non-JSON: ${truncate(statusText, 200)}`);
+    }
+    lastStatus = statusData?.status || '';
+    if (onProgress) {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      onProgress(`fal task ${requestId.slice(0, 8)} status=${lastStatus} (${elapsed}s)`);
+    }
+    if (lastStatus === 'COMPLETED') {
+      const resultResp = await fetch(resultUrl, { headers: authHeader });
+      const resultText = await resultResp.text();
+      if (!resultResp.ok) {
+        throw new Error(`fal result ${resultResp.status}: ${truncate(resultText, 240)}`);
+      }
+      try { return JSON.parse(resultText); } catch {
+        throw new Error(`fal result non-JSON: ${truncate(resultText, 200)}`);
+      }
+    }
+    if (lastStatus === 'FAILED') {
+      const errRaw = statusData?.error?.message
+        ?? (typeof statusData?.error === 'string' ? statusData.error : null)
+        ?? 'unknown error';
+      throw new Error(`fal task failed: ${errRaw}`);
+    }
+  }
+  const elapsed = Math.round((Date.now() - startedAt) / 1000);
+  const ceil = Math.round(maxMs / 1000);
+  throw new Error(
+    `fal timed out after ${elapsed}s waiting for COMPLETED ` +
+    `(last status: ${lastStatus || 'unknown'}, ceiling ${ceil}s). ` +
+    `Raise OD_FAL_MAX_POLL_MS to extend the ceiling.`,
+  );
+}
+
+function falMaxPollMs(defaultMs: number): number {
+  const v = Number(process.env.OD_FAL_MAX_POLL_MS);
+  return Number.isFinite(v) && v >= 30_000 ? v : defaultMs;
+}
+
+function falQueueBase(baseUrl: string): string {
+  if (baseUrl.includes('queue.fal.run')) return baseUrl;
+  // Replace only the exact host to avoid mangling custom base URLs that
+  // happen to contain "fal.run" as a substring.
+  return baseUrl.replace(/^https:\/\/fal\.run/, 'https://queue.fal.run');
+}
+
+async function renderFalImage(ctx: MediaContext, credentials: ProviderConfig): Promise<RenderResult> {
+  if (!credentials.apiKey) {
+    throw new Error('no Fal API key — configure it in Settings or set FAL_KEY');
+  }
+  const queueBase = falQueueBase((credentials.baseUrl || 'https://fal.run').replace(/\/$/, ''));
+  const endpoint = FAL_ENDPOINTS[ctx.model] ?? ctx.model;
+  const aspectRatio = ctx.aspect ?? '1:1';
+
+  const input: Record<string, unknown> = {
+    prompt: ctx.prompt || 'A high-quality image.',
+    num_images: 1,
+  };
+  // flux-pro-ultra and similar pro variants expect `aspect_ratio` as a
+  // ratio string; most other fal image models use a named `image_size`.
+  if (FAL_IMAGE_USES_ASPECT_RATIO.has(endpoint)) {
+    input.aspect_ratio = aspectRatio;
+  } else {
+    input.image_size = FAL_IMAGE_SIZES[aspectRatio] ?? 'square_hd';
+  }
+  if (ctx.imageRef?.dataUrl) {
+    input.image_url = ctx.imageRef.dataUrl;
+  }
+
+  const result = await falQueueRun(endpoint, queueBase, credentials.apiKey, input, falMaxPollMs(5 * 60 * 1000));
+
+  const imageEntry = Array.isArray(result?.images) ? result.images[0] : null;
+  if (!imageEntry?.url) {
+    throw new Error(`fal image missing images[0].url: ${truncate(JSON.stringify(result), 200)}`);
+  }
+  const dlResp = await fetch(imageEntry.url);
+  if (!dlResp.ok) throw new Error(`fal image download ${dlResp.status}`);
+  const bytes = Buffer.from(await dlResp.arrayBuffer());
+  const sizeLabel = FAL_IMAGE_USES_ASPECT_RATIO.has(endpoint) ? aspectRatio : (FAL_IMAGE_SIZES[aspectRatio] ?? 'square_hd');
+
+  return {
+    bytes,
+    providerNote: `fal/${endpoint} · ${sizeLabel} · ${bytes.length} bytes`,
+    suggestedExt: sniffImageExt(bytes),
+  };
+}
+
+async function renderFalVideo(ctx: MediaContext, credentials: ProviderConfig, onProgress?: ProgressFn): Promise<RenderResult> {
+  if (!credentials.apiKey) {
+    throw new Error('no Fal API key — configure it in Settings or set FAL_KEY');
+  }
+  const queueBase = falQueueBase((credentials.baseUrl || 'https://fal.run').replace(/\/$/, ''));
+  const endpoint = FAL_ENDPOINTS[ctx.model] ?? ctx.model;
+  const aspectRatio = ctx.aspect ?? '16:9';
+  const durationSec = ctx.length ?? 5;
+
+  const input: Record<string, unknown> = {
+    prompt: ctx.prompt || 'A short cinematic clip.',
+    aspect_ratio: aspectRatio,
+  };
+  // Track the effective duration label (what we actually send upstream).
+  let effectiveDurationLabel: string | undefined;
+  let durationSnappedNote = '';
+  // Some models (Wan) have no duration parameter; others (Veo) require a
+  // suffixed string from a fixed bucket set ("4s"/"6s"/"8s").
+  if (!FAL_VIDEO_NO_DURATION.has(endpoint)) {
+    if (FAL_VIDEO_STRING_DURATION.has(endpoint)) {
+      const closest = FAL_VEO_DURATION_BUCKETS.reduce((a, b) =>
+        Math.abs(b - durationSec) < Math.abs(a - durationSec) ? b : a,
+      );
+      input.duration = `${closest}s`;
+      effectiveDurationLabel = `${closest}s`;
+      if (closest !== durationSec) {
+        durationSnappedNote = ` (requested ${durationSec}s → snapped to ${closest}s)`;
+      }
+    } else {
+      input.duration = durationSec;
+      effectiveDurationLabel = `${durationSec}s`;
+    }
+  }
+  if (ctx.imageRef?.dataUrl) {
+    input.image_url = ctx.imageRef.dataUrl;
+  }
+
+  const result = await falQueueRun(
+    endpoint, queueBase, credentials.apiKey, input,
+    falMaxPollMs(10 * 60 * 1000), onProgress, ctx.model,
+  );
+
+  const videoUrl: string | null =
+    result?.video?.url
+    ?? (Array.isArray(result?.videos) ? result.videos[0]?.url : null)
+    ?? null;
+  if (!videoUrl) {
+    throw new Error(`fal video missing video.url: ${truncate(JSON.stringify(result), 200)}`);
+  }
+  const dlResp = await fetch(videoUrl);
+  if (!dlResp.ok) throw new Error(`fal video download ${dlResp.status}`);
+  const bytes = Buffer.from(await dlResp.arrayBuffer());
+  const durationPart = effectiveDurationLabel ? ` · ${effectiveDurationLabel}${durationSnappedNote}` : '';
+
+  return {
+    bytes,
+    providerNote: `fal/${endpoint} · ${aspectRatio}${durationPart} · ${bytes.length} bytes`,
+    suggestedExt: '.mp4',
   };
 }
 

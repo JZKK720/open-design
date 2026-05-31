@@ -173,9 +173,7 @@ describe('mergeDaemonConfig', () => {
         },
       },
       {
-        config: {
-          agentId: 'codex',
-        },
+        agentId: 'codex',
       },
     );
 
@@ -183,71 +181,49 @@ describe('mergeDaemonConfig', () => {
     expect(merged.agentCliEnv).toEqual({});
   });
 
-  it('adopts an Ollama bootstrap when local config is still at defaults', () => {
-    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      config: {},
-      bootstrap: {
+  it('leaves local execution config untouched because daemon prefs no longer own bootstrap defaults', () => {
+    const merged = mergeDaemonConfig(
+      {
+        ...DEFAULT_CONFIG,
         mode: 'api',
         apiProtocol: 'ollama',
         baseUrl: 'http://host.docker.internal:11434',
         model: 'qwen3.6:35b-a3b-q8_0',
+        executionConfigSource: 'custom',
       },
-    });
+      {
+        agentId: 'codex',
+      },
+    );
 
+    expect(merged.agentId).toBe('codex');
     expect(merged.mode).toBe('api');
     expect(merged.apiProtocol).toBe('ollama');
     expect(merged.baseUrl).toBe('http://host.docker.internal:11434');
     expect(merged.model).toBe('qwen3.6:35b-a3b-q8_0');
-    expect(merged.executionConfigSource).toBe('bootstrap');
-  });
-
-  it('replaces a legacy bootstrap snapshot when the daemon pin changes', () => {
-    const merged = mergeDaemonConfig(
-      {
-        ...DEFAULT_CONFIG,
-        mode: 'api',
-        apiProtocol: 'ollama',
-        baseUrl: 'http://host.docker.internal:11434',
-        model: 'gemma4:e2b-it-q4_K_M',
-      },
-      {
-        config: {},
-        bootstrap: {
-          mode: 'api',
-          apiProtocol: 'ollama',
-          baseUrl: 'http://host.docker.internal:11434',
-          model: 'qwen3.5:35b-a3b',
-        },
-      },
-    );
-
-    expect(merged.model).toBe('qwen3.5:35b-a3b');
-    expect(merged.executionConfigSource).toBe('bootstrap');
-  });
-
-  it('preserves an explicit custom execution override across bootstrap refreshes', () => {
-    const merged = mergeDaemonConfig(
-      {
-        ...DEFAULT_CONFIG,
-        mode: 'api',
-        apiProtocol: 'ollama',
-        baseUrl: 'http://host.docker.internal:11434',
-        model: 'gemma4:e2b-it-q4_K_M',
-        executionConfigSource: 'custom',
-      },
-      {
-        config: {},
-        bootstrap: {
-          mode: 'api',
-          apiProtocol: 'ollama',
-          baseUrl: 'http://host.docker.internal:11434',
-          model: 'qwen3.5:35b-a3b',
-        },
-      },
-    );
-
-    expect(merged.model).toBe('gemma4:e2b-it-q4_K_M');
     expect(merged.executionConfigSource).toBe('custom');
+  });
+
+  it('copies daemon project library prefs', () => {
+    const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
+      projectLocations: [
+        {
+          id: 'team-library',
+          name: 'Team Library',
+          path: '/srv/team-library',
+        },
+      ],
+      defaultProjectLocationId: 'team-library',
+    });
+
+    expect(merged.projectLocations).toEqual([
+      {
+        id: 'team-library',
+        name: 'Team Library',
+        path: '/srv/team-library',
+      },
+    ]);
+    expect(merged.defaultProjectLocationId).toBe('team-library');
   });
 
   it('uses daemon CLI env prefs instead of merging with stale local entries', () => {
@@ -259,10 +235,8 @@ describe('mergeDaemonConfig', () => {
         },
       },
       {
-        config: {
-          agentCliEnv: {
-            codex: { CODEX_HOME: '~/.codex-new', CODEX_BIN: '~/bin/codex-new' },
-          },
+        agentCliEnv: {
+          codex: { CODEX_HOME: '~/.codex-new', CODEX_BIN: '~/bin/codex-new' },
         },
       },
     );
@@ -274,11 +248,9 @@ describe('mergeDaemonConfig', () => {
 
   it('copies privacyDecisionAt from daemon config', () => {
     const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      config: {
-        installationId: 'install-1',
-        privacyDecisionAt: 1778244000000,
-        telemetry: { metrics: true },
-      },
+      installationId: 'install-1',
+      privacyDecisionAt: 1778244000000,
+      telemetry: { metrics: true },
     });
 
     expect(merged.installationId).toBe('install-1');
@@ -288,10 +260,8 @@ describe('mergeDaemonConfig', () => {
 
   it('migrates old daemon privacy config to a resolved decision', () => {
     const merged = mergeDaemonConfig(DEFAULT_CONFIG, {
-      config: {
-        installationId: 'install-1',
-        telemetry: { metrics: true },
-      },
+      installationId: 'install-1',
+      telemetry: { metrics: true },
     });
 
     expect(merged.installationId).toBe('install-1');
@@ -708,6 +678,7 @@ describe('fetchMediaProvidersFromDaemon', () => {
           providers: {
             openai: {
               configured: true,
+              source: 'stored',
               apiKeyTail: '1234',
               baseUrl: 'https://daemon.example/v1',
               model: 'gpt-image-1',
@@ -725,6 +696,7 @@ describe('fetchMediaProvidersFromDaemon', () => {
         openai: {
           apiKey: '',
           apiKeyConfigured: true,
+          source: 'stored',
           apiKeyTail: '1234',
           baseUrl: 'https://daemon.example/v1',
           model: 'gpt-image-1',
@@ -804,6 +776,34 @@ describe('buildMediaProvidersForDaemonSave', () => {
           model: 'gemini-custom',
         },
       },
+      force: false,
+    });
+  });
+
+  it('does not persist default OpenAI base URL for OAuth-only markers', () => {
+    expect(
+      buildMediaProvidersForDaemonSave(
+        {
+          openai: {
+            apiKey: '',
+            apiKeyConfigured: true,
+            apiKeyTail: '',
+            baseUrl: '',
+            source: 'oauth-codex',
+          },
+        },
+        {
+          openai: {
+            apiKey: '',
+            apiKeyConfigured: true,
+            apiKeyTail: '',
+            baseUrl: '',
+            source: 'oauth-codex',
+          },
+        },
+      ),
+    ).toEqual({
+      providers: {},
       force: false,
     });
   });

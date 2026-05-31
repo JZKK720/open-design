@@ -202,6 +202,14 @@ function migrate(db: SqliteDb): void {
       FOREIGN KEY(routine_id) REFERENCES routines(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS routine_schedule_claims (
+      routine_id TEXT NOT NULL,
+      slot_at INTEGER NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      PRIMARY KEY(routine_id, slot_at),
+      FOREIGN KEY(routine_id) REFERENCES routines(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
       ON routine_runs(routine_id, started_at DESC);
   `);
@@ -744,12 +752,23 @@ export function listConversations(db: SqliteDb, projectId: string) {
                  AND m.run_status IS NOT NULL
             )
            WHERE rn = 1
+        ),
+        total_run_durations AS (
+          SELECT m.conversation_id AS conversationId,
+                 SUM(${terminalRunDurationSql('m')}) AS totalDurationMs
+            FROM messages m
+            JOIN project_conversations c ON c.id = m.conversation_id
+           WHERE m.role = 'assistant'
+             AND m.run_status IN ('succeeded', 'failed', 'canceled')
+           GROUP BY m.conversation_id
         )
         SELECT c.id, c.projectId, c.title, c.createdAt, c.updatedAt,
                lr.latestRunStatus, lr.latestRunStartedAt,
-               lr.latestRunEndedAt, lr.latestRunEventsJson
+               lr.latestRunEndedAt, lr.latestRunEventsJson,
+               trd.totalDurationMs
           FROM project_conversations c
           LEFT JOIN latest_runs lr ON lr.conversationId = c.id
+          LEFT JOIN total_run_durations trd ON trd.conversationId = c.id
          ORDER BY c.updatedAt DESC`,
     )
     .all(projectId)).map(normalizeConversation);
@@ -767,6 +786,7 @@ export function getConversation(db: SqliteDb, id: string) {
   return {
     ...normalizeConversation(r),
     latestRun: latestConversationRunSummary(db, r.id) ?? undefined,
+    ...numberProperty('totalDurationMs', totalConversationRunDurationMs(db, r.id)),
   };
 }
 
@@ -783,8 +803,14 @@ function normalizeConversation(r: DbRow) {
     title: r.title ?? null,
     createdAt: Number(r.createdAt),
     updatedAt: Number(r.updatedAt),
+    ...numberProperty('totalDurationMs', r.totalDurationMs),
     latestRun: latestRun ?? undefined,
   };
+}
+
+function numberProperty(key: string, value: unknown) {
+  const n = value == null ? undefined : Number(value);
+  return typeof n === 'number' && Number.isFinite(n) ? { [key]: n } : {};
 }
 
 function latestConversationRunSummary(db: SqliteDb, conversationId: string) {
@@ -803,6 +829,50 @@ function latestConversationRunSummary(db: SqliteDb, conversationId: string) {
     )
     .get(conversationId) as DbRow | undefined;
   return conversationRunSummaryFromRow(row);
+}
+
+function totalConversationRunDurationMs(db: SqliteDb, conversationId: string): number | undefined {
+  const row = db
+    .prepare(
+      `SELECT SUM(${terminalRunDurationSql()}) AS totalDurationMs
+         FROM messages
+        WHERE conversation_id = ?
+          AND role = 'assistant'
+          AND run_status IN ('succeeded', 'failed', 'canceled')`,
+    )
+    .get(conversationId) as DbRow | undefined;
+  return row?.totalDurationMs == null ? undefined : Number(row.totalDurationMs);
+}
+
+function terminalRunDurationSql(alias?: string) {
+  const p = alias ? `${alias}.` : '';
+  return `CASE
+            WHEN ${p}started_at IS NOT NULL AND ${p}ended_at IS NOT NULL THEN
+              CASE
+                WHEN CAST(${p}ended_at AS INTEGER) >= CAST(${p}started_at AS INTEGER)
+                  THEN CAST(${p}ended_at AS INTEGER) - CAST(${p}started_at AS INTEGER)
+                ELSE 0
+              END
+            ELSE (
+              SELECT CASE
+                       WHEN json_extract(usage_event.value, '$.durationMs') >= 0
+                         THEN json_extract(usage_event.value, '$.durationMs')
+                       ELSE 0
+                     END
+                FROM json_each(
+                  CASE
+                    WHEN json_valid(${p}events_json) AND json_type(${p}events_json) = 'array'
+                      THEN ${p}events_json
+                    ELSE '[]'
+                  END
+                ) AS usage_event
+               WHERE usage_event.type = 'object'
+                 AND json_extract(usage_event.value, '$.kind') = 'usage'
+                 AND json_type(usage_event.value, '$.durationMs') IN ('integer', 'real')
+               ORDER BY CAST(usage_event.key AS INTEGER) DESC
+               LIMIT 1
+            )
+          END`;
 }
 
 function conversationRunSummaryFromRow(row: DbRow | undefined) {
@@ -1495,6 +1565,41 @@ export function insertRoutineRun(db: SqliteDb, r: DbRow) {
   return getRoutineRun(db, r.id);
 }
 
+export function insertScheduledRoutineRun(db: SqliteDb, r: DbRow, slotAt: number) {
+  const insertClaim = db.prepare(
+    `INSERT OR IGNORE INTO routine_schedule_claims
+       (routine_id, slot_at, claimed_at)
+     VALUES (?, ?, ?)`,
+  );
+  const insertRun = db.prepare(
+    `INSERT INTO routine_runs
+       (id, routine_id, trigger, status, project_id, conversation_id,
+        agent_run_id, started_at, completed_at, summary, error, error_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const tx = db.transaction(() => {
+    const claim = insertClaim.run(r.routineId, slotAt, Date.now());
+    if (claim.changes === 0) return false;
+    insertRun.run(
+      r.id,
+      r.routineId,
+      r.trigger,
+      r.status,
+      r.projectId,
+      r.conversationId,
+      r.agentRunId,
+      r.startedAt,
+      r.completedAt ?? null,
+      r.summary ?? null,
+      r.error ?? null,
+      r.errorCode ?? null,
+    );
+    return true;
+  });
+  if (!tx()) return null;
+  return getRoutineRun(db, r.id);
+}
+
 export function updateRoutineRun(db: SqliteDb, id: string, patch: DbRow) {
   const existing = getRoutineRun(db, id);
   if (!existing) return null;
@@ -1504,10 +1609,14 @@ export function updateRoutineRun(db: SqliteDb, id: string, patch: DbRow) {
   };
   db.prepare(
     `UPDATE routine_runs
-        SET status = ?, completed_at = ?, summary = ?, error = ?, error_code = ?
+        SET status = ?, project_id = ?, conversation_id = ?, agent_run_id = ?,
+            completed_at = ?, summary = ?, error = ?, error_code = ?
       WHERE id = ?`,
   ).run(
     merged.status,
+    merged.projectId,
+    merged.conversationId,
+    merged.agentRunId,
     merged.completedAt ?? null,
     merged.summary ?? null,
     merged.error ?? null,
