@@ -407,7 +407,38 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     protocol: 'ollama',
     baseUrl: 'http://localhost:11434',
     model: 'gemma3:4b',
-    models: ['gemma3:4b', 'gemma3:12b', 'gemma3:27b', 'gpt-oss:20b'],
+    models: [
+      'gemma3:4b',
+      'gemma3:12b',
+      'gemma3:27b',
+      'gpt-oss:20b',
+      'gemma4:12b-it-qat',
+      'gemma4:12b-it-q8_0',
+      'gemma4:26b-a4b-it-qat',
+      'gemma4:31b-it-qat',
+      'qwen3.5:35b-a3b',
+    ],
+    requiresApiKey: false,
+  },
+  {
+    // Docker Desktop on Windows/macOS, or `docker run --add-host=host.docker.internal:host-gateway`
+    // on Linux. The daemon runs in a container, so it cannot reach the
+    // host's loopback directly; the host-gateway IP is the right alias.
+    label: 'Ollama Self-hosted (Docker host)',
+    protocol: 'ollama',
+    baseUrl: 'http://host.docker.internal:11434',
+    model: 'gemma4:12b-it-qat',
+    models: [
+      'gemma4:12b-it-qat',
+      'gemma4:12b-it-q8_0',
+      'gemma4:26b-a4b-it-qat',
+      'gemma4:31b-it-qat',
+      'qwen3.5:35b-a3b',
+      'gemma3:4b',
+      'gemma3:12b',
+      'gemma3:27b',
+      'gpt-oss:20b',
+    ],
     requiresApiKey: false,
   },
   {
