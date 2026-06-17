@@ -74,8 +74,8 @@ jobs:
           # contributors.
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/od:nightly
-            ghcr.io/${{ github.repository_owner }}/od:main-${{ steps.sha.outputs.short }}
+            ghcr.io/${{ github.repository_owner | lower }}/od:nightly
+            ghcr.io/${{ github.repository_owner | lower }}/od:main-${{ steps.sha.outputs.short }}
           # `:nightly` is the live mutable alias; `:main-<sha>` is
           # the immutable per-push pin. A user wanting the
           # artifact of commit abc1234f pulls
