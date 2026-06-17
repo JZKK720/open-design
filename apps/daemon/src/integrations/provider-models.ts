@@ -187,7 +187,7 @@ function extractGoogleModels(data: unknown): ProviderModelOption[] {
   );
 }
 
-function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, apiKey: string): string {
+function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, _apiKey: string): string {
   if (protocol === 'aihubmix') {
     // AIHubMix exposes its chat catalogue on a dedicated endpoint
     // (GET /api/v1/models?type=llm), not the OpenAI /v1/models route.
@@ -202,7 +202,19 @@ function providerModelsUrl(protocol: ConnectionTestProtocol, baseUrl: string, ap
     return url.toString();
   }
   if (protocol === 'google') {
-    return googleProviderModelsUrl(baseUrl, apiKey);
+    return googleProviderModelsUrl(baseUrl, _apiKey);
+  }
+  if (protocol === 'ollama') {
+    // Ollama's local catalogue is exposed at GET /api/tags (not the
+    // OpenAI-compatible /v1/models). The endpoint is public-ish; the
+    // Bearer header is sent but the server ignores it. Strip any
+    // trailing /v1 or /api so a base URL like http://host:11434/v1
+    // (which some users paste from OpenAI clients) still works.
+    const trimmed = baseUrl
+      .replace(/\/+$/, '')
+      .replace(/\/v\d+\/?$/, '')
+      .replace(/\/api\/?$/, '');
+    return `${trimmed}/api/tags`;
   }
   throw new Error(`Unsupported protocol: ${protocol}`);
 }
@@ -240,6 +252,18 @@ function extractModels(protocol: ConnectionTestProtocol, data: unknown): Provide
   if (protocol === 'openai' || protocol === 'senseaudio') return extractOpenAiModels(data);
   if (protocol === 'anthropic') return extractAnthropicModels(data);
   if (protocol === 'google') return extractGoogleModels(data);
+  if (protocol === 'ollama') {
+    // Ollama's /api/tags returns { models: [{ name, size, ... }] }.
+    // Use `name` as the picker id (matches what /api/chat expects).
+    const items = (data as { models?: unknown }).models;
+    if (!Array.isArray(items)) return [];
+    return uniqueModels(
+      items
+        .map((item) => (item as { name?: unknown })?.name)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+        .map((name) => ({ id: name, label: name })),
+    );
+  }
   return [];
 }
 
