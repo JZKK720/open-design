@@ -3,7 +3,12 @@ name: open-design
 services:
   open-design:
     container_name: open-design
-    image: ${OPEN_DESIGN_IMAGE:-ghcr.io/nexu-io/od:latest}
+    # Default to the fork's GHCR :latest image (built from this repo via
+    # .github/workflows/publish-ghcr-nightly.yml on every push to main).
+    # Override with OPEN_DESIGN_IMAGE in deploy/.env to pin to a digest,
+    # a specific tag (e.g. :nightly or :main-<sha>), or a different
+    # registry.
+    image: ${OPEN_DESIGN_IMAGE:-ghcr.io/jzkk720/od:latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
