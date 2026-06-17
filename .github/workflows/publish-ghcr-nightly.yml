@@ -4,7 +4,7 @@ name: Publish container nightly
 # (v*.*.* → :X.Y.Z + :latest, ghcr.io/<owner>/od, spec §15.1).
 #
 # This workflow is the dev-validation lane:
-#   - push to main       → ghcr.io/<owner>/od:nightly
+#   - push to main       → ghcr.io/<owner>/od:nightly (+ :latest)
 #   - pull request       → build only, no push (PRs from forks cannot
 #                          use the default GITHUB_TOKEN for write
 #                          scopes, and the build result is not a
@@ -17,6 +17,23 @@ name: Publish container nightly
 # not pin production runs to it. For reproducible pulls use the
 # immutable :main-<sha> tag or a release :X.Y.Z from
 # docker-image.yml.
+#
+# Multi-arch publication:
+#   The earlier single-job `build` ran per-platform in a matrix and
+#   pushed the same `:latest`/`:nightly`/`:main-<sha>` tags from
+#   each shard. GHCR kept only the last writer's manifest-list, so
+#   `:latest` ended up containing only whichever platform finished
+#   second. To produce a real multi-arch image we now:
+#     1. shard per platform into separate `build-amd64` / `build-arm64`
+#        jobs that push per-platform tags (`-amd64-<sha>` /
+#        `-arm64-<sha>`).
+#     2. add a final `merge-manifests` job that uses `docker
+#        buildx imagetools create` to combine the two per-platform
+#        manifests into a manifest-list, then re-tags the resulting
+#        digest with `:latest`, `:nightly`, and `:main-<sha>`.
+#   If a future platform is added (linux/riscv64 etc.), drop it into
+#   the matrix; the merge job's image list picks it up
+#   automatically.
 
 on:
   push:
@@ -30,20 +47,12 @@ permissions:
   packages: write
 
 jobs:
-  build:
+  build-amd64:
+    name: build (linux/amd64)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [linux/amd64, linux/arm64]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -65,30 +74,107 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile
-          platforms: ${{ matrix.platform }}
-          # PR builds verify the Dockerfile still resolves; only
-          # main pushes and manual dispatches publish to the
-          # registry. The default GITHUB_TOKEN on a fork PR has no
-          # packages: write scope, so this guard is also the one
-          # that keeps the workflow runnable for external
-          # contributors.
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/jzkk720/od:latest
-            ghcr.io/jzkk720/od:nightly
-            ghcr.io/jzkk720/od:main-${{ steps.sha.outputs.short }}
-          # `:latest` is the production alias (always points at the
-          # last build from main). `:nightly` is the dev-validation
-          # alias (same content; kept for workflows that distinguish
-          # the two). `:main-<sha>` is the immutable per-push pin.
-          # A user wanting the artifact of commit abc1234f pulls
-          # `ghcr.io/jzkk720/od:main-abc1234f` and gets exactly
-          # that build, even after later commits move :latest.
+            ghcr.io/jzkk720/od:amd64-${{ steps.sha.outputs.short }}
           labels: |
             org.opencontainers.image.title=Open Design
-            org.opencontainers.image.description=Dev-validation build of Open Design, refreshed on every push to main.
+            org.opencontainers.image.description=Dev-validation build of Open Design (linux/amd64), refreshed on every push to main.
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  build-arm64:
+    name: build (linux/arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (nightly on main, build-only on PRs)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/jzkk720/od:arm64-${{ steps.sha.outputs.short }}
+          labels: |
+            org.opencontainers.image.title=Open Design
+            org.opencontainers.image.description=Dev-validation build of Open Design (linux/arm64), refreshed on every push to main.
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  merge-manifests:
+    name: Merge per-platform manifests into :latest / :nightly / :main-<sha>
+    runs-on: ubuntu-latest
+    needs: [build-amd64, build-arm64]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest-list and apply tags
+        # `docker buildx imagetools create` joins the per-platform
+        # manifests into a single multi-arch index, then re-tags the
+        # resulting digest with each of the user-facing aliases. We
+        # pass the per-platform sources as positional args and the
+        # aliases as `--tag` flags. The resulting digest is the same
+        # for every tag, so `:latest`, `:nightly`, and `:main-<sha>`
+        # all resolve to one manifest-list.
+        env:
+          PLATFORM_AMD64: ghcr.io/jzkk720/od:amd64-${{ steps.sha.outputs.short }}
+          PLATFORM_ARM64: ghcr.io/jzkk720/od:arm64-${{ steps.sha.outputs.short }}
+          TAG_LATEST: ghcr.io/jzkk720/od:latest
+          TAG_NIGHTLY: ghcr.io/jzkk720/od:nightly
+          TAG_SHA: ghcr.io/jzkk720/od:main-${{ steps.sha.outputs.short }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${TAG_NIGHTLY}" \
+            --tag "${TAG_LATEST}" \
+            --tag "${TAG_SHA}" \
+            "${PLATFORM_AMD64}" \
+            "${PLATFORM_ARM64}"
+          echo "Merged manifest-list:"
+          docker buildx imagetools inspect "${TAG_NIGHTLY}"
