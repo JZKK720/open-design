@@ -3479,7 +3479,36 @@ export async function startServer({
       // header here because a reverse proxy MUST always forward the
       // bearer; the loopback bypass exists for the localhost desktop
       // UI which has no proxy in the path.
+      // Also treat RFC1918 private-network peers (172.16.0.0/12,
+      // 192.168.0.0/16, 10.0.0.0/8) as loopback-equivalent. When the
+      // daemon is run via `docker compose` with `127.0.0.1:PORT`
+      // publishing, Docker's iptables NAT rewrites the host source
+      // address to the container's bridge gateway (e.g. 172.17.0.1 or
+      // 172.23.0.1 on Docker Desktop for Windows), so the literal
+      // 127.0.0.1 check misses real loopback-equivalent peers. This
+      // is gated behind OD_ALLOW_PRIVATE_PEER=1 so the default still
+      // refuses arbitrary private network access.
       if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      if (process.env.OD_ALLOW_PRIVATE_PEER === '1') {
+        const remoteAddr = req.socket?.remoteAddress;
+        if (typeof remoteAddr === 'string') {
+          const normalized = remoteAddr
+            .trim()
+            .toLowerCase()
+            .replace(/^\[|\]$/g, '');
+          const unv4 = normalized.startsWith('::ffff:')
+            ? normalized.slice('::ffff:'.length)
+            : normalized;
+          if (
+            net.isIP(unv4) === 4 &&
+            (/^10\./.test(unv4) ||
+              /^192\.168\./.test(unv4) ||
+              /^172\.(1[6-9]|2[0-9]|3[01])\./.test(unv4))
+          ) {
+            return next();
+          }
+        }
+      }
       const auth = req.get('authorization') ?? '';
       const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
       if (!match || match[1] !== apiToken) {
