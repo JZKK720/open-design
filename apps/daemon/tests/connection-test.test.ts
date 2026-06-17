@@ -555,7 +555,7 @@ describe('POST /api/provider/models', () => {
         apiKey: 'sk-timeout',
       });
 
-      await vi.advanceTimersByTimeAsync(12_000);
+      await vi.advanceTimersByTimeAsync(30_000);
       await expect(pending).resolves.toMatchObject({
         ok: false,
         kind: 'timeout',
@@ -3963,8 +3963,8 @@ describe('connection test helpers', () => {
 describe('connection test timeout overrides', () => {
   it('returns the fallback when the override is missing or empty', () => {
     expect(
-      resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 12_000, {}),
-    ).toBe(12_000);
+      resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 30_000, {}),
+    ).toBe(30_000);
     expect(
       resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_AGENT_TIMEOUT_MS', 45_000, {
         OD_CONNECTION_TEST_AGENT_TIMEOUT_MS: '',
@@ -3974,7 +3974,7 @@ describe('connection test timeout overrides', () => {
 
   it('honors a positive integer override', () => {
     expect(
-      resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 12_000, {
+      resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 30_000, {
         OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS: '30000',
       }),
     ).toBe(30_000);
@@ -3990,10 +3990,10 @@ describe('connection test timeout overrides', () => {
     try {
       for (const bad of ['fast', '0', '-1', '1.5', 'NaN']) {
         expect(
-          resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 12_000, {
+          resolveConnectionTestTimeoutMs('OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS', 30_000, {
             OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS: bad,
           }),
-        ).toBe(12_000);
+        ).toBe(30_000);
       }
       expect(warn).toHaveBeenCalled();
     } finally {

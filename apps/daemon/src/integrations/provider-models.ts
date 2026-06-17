@@ -8,7 +8,7 @@ import type {
   ProviderModelsResponse,
 } from '@open-design/contracts/api/providerModels';
 import { isLoopbackApiHost } from '@open-design/contracts/api/connectionTest';
-import { redactSecrets, validateBaseUrlResolved } from '../connectionTest.js';
+import { defaultDnsLookup, redactSecrets, validateBaseUrlResolved } from '../connectionTest.js';
 import { googleProviderModelsUrl, normalizeGoogleModelId } from './google-models.js';
 import { aihubmixHeaders, aihubmixCatalogUrl, parseAIHubMixCatalog } from './aihubmix.js';
 
@@ -17,7 +17,7 @@ type ProviderModelsInput = ProviderModelsRequest & {
   requestInit?: Pick<RequestInit, 'dispatcher'>;
 };
 
-const PROVIDER_MODELS_TIMEOUT_MS = 12_000;
+const PROVIDER_MODELS_TIMEOUT_MS = 30_000;
 const BEDROCK_MODEL_OPTIONS: ProviderModelOption[] = [
   { id: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
   { id: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku' },
@@ -256,7 +256,7 @@ export async function listProviderModels(
     };
   }
 
-  const validated = await validateBaseUrlResolved(input.baseUrl);
+  const validated = await validateBaseUrlResolved(input.baseUrl, defaultDnsLookup, input.protocol);
   if (validated.error || !validated.parsed) {
     return {
       ok: false,

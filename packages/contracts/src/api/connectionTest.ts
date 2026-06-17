@@ -108,7 +108,7 @@ export function isBlockedExternalApiHostname(hostname: string): boolean {
   return Boolean(mapped && isBlockedIpv4(mapped));
 }
 
-export function validateBaseUrl(baseUrl: string): BaseUrlValidationResult {
+export function validateBaseUrl(baseUrl: string, protocol?: string): BaseUrlValidationResult {
   let parsed: ParsedBaseUrl;
   try {
     parsed = new URL(String(baseUrl).replace(/\/+$/, ''));
@@ -120,6 +120,13 @@ export function validateBaseUrl(baseUrl: string): BaseUrlValidationResult {
   }
   const hostname = parsed.hostname.toLowerCase();
   if (!isLoopbackApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
+    // Ollama on RFC1918 is a common local-provider use case
+    // (e.g., Ollama on host with Docker Desktop for Windows).
+    // Loopback is still the preferred pattern; this is an exception
+    // for the ollama protocol only.
+    if (protocol === 'ollama') {
+      return { parsed };
+    }
     return { error: 'Internal IPs blocked', forbidden: true };
   }
   return { parsed };

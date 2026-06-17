@@ -32,7 +32,7 @@ import {
 } from '../integrations/aihubmix.js';
 import { isSafeId as isSafeProjectId } from '../projects.js';
 import { projectKindToTracking } from '@open-design/contracts/analytics';
-import { proxyDispatcherRequestInit, validateBaseUrlResolved } from '../connectionTest.js';
+import { defaultDnsLookup, proxyDispatcherRequestInit, validateBaseUrlResolved } from '../connectionTest.js';
 import { googleStreamGenerateContentUrl } from '../integrations/google-models.js';
 import { createRoleMarkerGuard } from '../role-marker-guard.js';
 import { authorizeReasoningEgress, sendReasoningEgressDenial } from '../reasoning-egress.js';
@@ -410,8 +410,8 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
   // (`internal.example.com → 10.0.0.5`) still passes. We delegate to
   // `validateBaseUrlResolved` here so every proxy/stream handler runs the
   // same resolved-IP check before issuing the upstream request.
-  const validateExternalApiBaseUrl = (baseUrl: string) => {
-    return validateBaseUrlResolved(baseUrl);
+  const validateExternalApiBaseUrl = (baseUrl: string, protocol?: string) => {
+    return validateBaseUrlResolved(baseUrl, defaultDnsLookup, protocol);
   };
 
   const proxyErrorCode = (status: number) => {
@@ -1282,7 +1282,7 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
     }
 
     const effectiveBaseUrl = baseUrl || 'https://ollama.com';
-    const validated = await validateExternalApiBaseUrl(effectiveBaseUrl);
+    const validated = await validateExternalApiBaseUrl(effectiveBaseUrl, 'ollama');
     if (validated.error) {
       return sendApiError(
         res,

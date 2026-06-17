@@ -97,7 +97,7 @@ export { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
 export type DnsLookupAddress = { address: string; family: number };
 export type DnsLookupFn = (hostname: string) => Promise<DnsLookupAddress[]>;
 
-const defaultDnsLookup: DnsLookupFn = async (hostname) => {
+export const defaultDnsLookup: DnsLookupFn = async (hostname) => {
   const result = await dnsPromises.lookup(hostname, { all: true, family: 0 });
   return result.map(({ address, family }) => ({ address, family }));
 };
@@ -113,8 +113,9 @@ function looksLikeIpLiteral(hostname: string): boolean {
 export async function validateBaseUrlResolved(
   baseUrl: string,
   lookup: DnsLookupFn = defaultDnsLookup,
+  protocol?: string,
 ): Promise<BaseUrlValidationResult> {
-  const sync = validateBaseUrl(baseUrl);
+  const sync = validateBaseUrl(baseUrl, protocol);
   if (sync.error || !sync.parsed) return sync;
 
   const hostname = sync.parsed.hostname.toLowerCase();
@@ -132,6 +133,8 @@ export async function validateBaseUrlResolved(
     const ip = String(addr.address).toLowerCase();
     if (isLoopbackApiHost(ip)) continue;
     if (isBlockedExternalApiHostname(ip)) {
+      // Ollama on RFC1918 is a common local-provider use case; allow it.
+      if (protocol === 'ollama') continue;
       return { error: 'Internal IPs blocked', forbidden: true };
     }
   }
@@ -198,7 +201,7 @@ export async function assertAndFetchExternalAsset(
 // Aggressive but not punitive — happy paths usually return in under 2 s.
 // Override with OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS for slow networks
 // or distant providers; invalid values fall back to the default.
-const DEFAULT_PROVIDER_TIMEOUT_MS = 12_000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 30_000;
 const LOOPBACK_NO_PROXY_TOKENS = ['localhost', '127.0.0.1', '[::1]'] as const;
 // CLI boot time is dominated by adapter auth/session restore; the heavy
 // adapters (Codex, Cursor Agent) regularly take 5–10 s on a cold first
@@ -1290,7 +1293,7 @@ export async function testProviderConnection(
   const start = Date.now();
   const model = String(input.model ?? '');
   const normalizedInput = normalizeProviderTestInput(input);
-  const validated = await validateBaseUrlResolved(normalizedInput.baseUrl);
+  const validated = await validateBaseUrlResolved(normalizedInput.baseUrl, defaultDnsLookup, input.protocol);
   if (validated.error || !validated.parsed) {
     const kind: ConnectionTestKind = validated.forbidden ? 'forbidden' : 'invalid_base_url';
     return {
