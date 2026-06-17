@@ -23,6 +23,10 @@ services:
       OD_API_TOKEN: ${OD_API_TOKEN:-}
       OD_DISABLE_API_AUTH: ${OPEN_DESIGN_DISABLE_API_AUTH:-}
       OD_CODEX_SANDBOX: ${OD_CODEX_SANDBOX:-}
+      # Local-deploy only: lets the host's web UI (which reaches the
+      # daemon through Docker's bridge NAT) authenticate as loopback
+      # without manually pasting OD_API_TOKEN. See .env for details.
+      OD_ALLOW_PRIVATE_PEER: ${OD_ALLOW_PRIVATE_PEER:-0}
     ports:
       - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
     volumes:
