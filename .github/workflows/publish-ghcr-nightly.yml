@@ -74,13 +74,16 @@ jobs:
           # contributors.
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
+            ghcr.io/jzkk720/od:latest
             ghcr.io/jzkk720/od:nightly
             ghcr.io/jzkk720/od:main-${{ steps.sha.outputs.short }}
-          # `:nightly` is the live mutable alias; `:main-<sha>` is
-          # the immutable per-push pin. A user wanting the
-          # artifact of commit abc1234f pulls
-          # `ghcr.io/<owner>/od:main-abc1234f` and gets exactly
-          # that build, even after later commits move :nightly.
+          # `:latest` is the production alias (always points at the
+          # last build from main). `:nightly` is the dev-validation
+          # alias (same content; kept for workflows that distinguish
+          # the two). `:main-<sha>` is the immutable per-push pin.
+          # A user wanting the artifact of commit abc1234f pulls
+          # `ghcr.io/jzkk720/od:main-abc1234f` and gets exactly
+          # that build, even after later commits move :latest.
           labels: |
             org.opencontainers.image.title=Open Design
             org.opencontainers.image.description=Dev-validation build of Open Design, refreshed on every push to main.
