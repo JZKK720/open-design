@@ -1,0 +1,67 @@
+name: open-design-patch-dev
+
+services:
+  open-design:
+    container_name: open-design
+    image: ${OPEN_DESIGN_IMAGE:-ghcr.io/jzkk720/od:latest}
+    restart: always
+    command:
+      - node
+      - -e
+      - |
+        // When OD_DEV_DAEMON_DIST is set and the path exists, hot-overlay
+        // the daemon dist directory before starting. Lets us iterate on
+        // daemon changes without rebuilding the published GHCR image.
+        const fs = require('fs');
+        const path = require('path');
+        const overlay = process.env.OD_DEV_DAEMON_DIST;
+        if (overlay && fs.existsSync(overlay)) {
+          const target = '/app/apps/daemon/dist';
+          fs.rmSync(target, { recursive: true, force: true });
+          fs.mkdirSync(target, { recursive: true });
+          for (const f of fs.readdirSync(overlay)) {
+            const src = path.join(overlay, f);
+            const dst = path.join(target, f);
+            fs.statSync(src).isDirectory()
+              ? fs.cpSync(src, dst, { recursive: true })
+              : fs.copyFileSync(src, dst);
+          }
+          console.log('[od-dev] overlay dist from', overlay, '->', target);
+        }
+        require('/app/apps/daemon/dist/server.js');
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=192}
+      OD_BIND_HOST: 0.0.0.0
+      OD_ALLOWED_ORIGINS: ${OPEN_DESIGN_ALLOWED_ORIGINS:-}
+      OD_PORT: 7456
+      OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
+      OD_API_TOKEN: ${OD_API_TOKEN:?Please run 'openssl rand -hex 32' to generate one, and set it in your .env file.}
+      OD_CODEX_SANDBOX: ${OD_CODEX_SANDBOX:-}
+      OD_ALLOW_PRIVATE_PEER: 1
+      OD_CONNECTION_TEST_PROVIDER_TIMEOUT_MS: 60000
+      OD_DEV_DAEMON_DIST: ${OD_DEV_DAEMON_DIST:-}
+    ports:
+      - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
+    volumes:
+      - open_design_data:/app/.od
+      - ${OD_DEV_DAEMON_DIST:-./_nope}:/app/apps/daemon/dist:ro
+    tmpfs:
+      - /tmp
+    mem_limit: ${OPEN_DESIGN_MEM_LIMIT:-384m}
+    pids_limit: 256
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7456/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  open_design_data:
