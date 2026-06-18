@@ -236,6 +236,30 @@ async function pushFork(): Promise<void> {
   }
 }
 
+async function pushForkIfAhead(): Promise<void> {
+  // Compare local main to fork/main. If local is ahead (or diverged),
+  // push. If they're identical, there's nothing to do.
+  const { stdout } = await git("rev-list", "--left-right", "--count", `${FORK_REMOTE}/${INTEGRATION_BRANCH}...${INTEGRATION_BRANCH}`);
+  const parts = stdout.trim().split(/\s+/);
+  const behind = Number(parts[0] ?? "0");
+  const ahead = Number(parts[1] ?? "0");
+
+  if (ahead === 0 && behind === 0) {
+    console.log(`[sync-fork] ${FORK_REMOTE}/${INTEGRATION_BRANCH} is already up to date. No push needed.`);
+    return;
+  }
+
+  if (ahead > 0 && behind === 0) {
+    console.log(`[sync-fork] local ${INTEGRATION_BRANCH} is ${ahead} commit(s) ahead of ${FORK_REMOTE}/${INTEGRATION_BRANCH}. Pushing...`);
+    await pushFork();
+    return;
+  }
+
+  // Diverged (both ahead and behind) — force-push after rebase is expected.
+  console.log(`[sync-fork] local ${INTEGRATION_BRANCH} diverged from ${FORK_REMOTE}/${INTEGRATION_BRANCH} (ahead ${ahead}, behind ${behind}). Force-pushing rebased history...`);
+  await pushFork();
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
 
@@ -281,6 +305,12 @@ async function main(): Promise<void> {
 
   if (!(await hasUpstreamCommits())) {
     console.log("[sync-fork] nothing to rebase — fork is already up to date with upstream.");
+    // Even if no rebase was needed, local main may still be ahead of
+    // fork/main (e.g. previous rebase completed but push was skipped, or
+    // new fork-only commits were added locally). Push if we're ahead.
+    if (!(args.noPush)) {
+      await pushForkIfAhead();
+    }
     return;
   }
 
