@@ -374,6 +374,240 @@ process.stdin.on('end', () => {
     );
   });
 
+  it('passes BYOK provider config to the daemon-backed OpenCode runtime', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for BYOK OpenCode config tests');
+    }
+
+    const projectId = `proj-${randomUUID()}`;
+    const markerDir = await fsp.mkdtemp(join(tmpdir(), 'od-byok-opencode-config-'));
+    tempDirs.push(markerDir);
+    const envFile = join(markerDir, 'opencode-config-content.json');
+    const keyFile = join(markerDir, 'byok-key.txt');
+    const argsFile = join(markerDir, 'args.json');
+
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'BYOK OpenCode fixture' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    await withFakeAgent(
+      'opencode',
+      `
+const fs = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(envFile)}, process.env.OPENCODE_CONFIG_CONTENT || '');
+  fs.writeFileSync(${JSON.stringify(keyFile)}, process.env.OPEN_DESIGN_BYOK_API_KEY || '');
+  fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: 'byok-opencode-ok' } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+      async () => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'byok-opencode',
+            projectId,
+            message: 'hello',
+            model: 'deepseek-v4-flash',
+            byokProvider: {
+              protocol: 'senseaudio',
+              apiKey: 'sk-test-byok',
+              baseUrl: 'https://api.senseaudio.cn',
+            },
+          }),
+        });
+        const body = await response.text();
+
+        expect(response.ok).toBe(true);
+        expect(body).toContain('byok-opencode-ok');
+
+        expect(await fsp.readFile(keyFile, 'utf8')).toBe('sk-test-byok');
+        expect(JSON.parse(await fsp.readFile(argsFile, 'utf8'))).toEqual([
+          'run',
+          '--format',
+          'json',
+          '-m',
+          'open-design-byok/deepseek-v4-flash',
+        ]);
+        const parsed = JSON.parse(await fsp.readFile(envFile, 'utf8')) as {
+          provider?: Record<string, {
+            npm?: string;
+            options?: Record<string, unknown>;
+            models?: Record<string, unknown>;
+          }>;
+        };
+        const provider = parsed.provider?.['open-design-byok'];
+        expect(provider).toMatchObject({
+          npm: '@ai-sdk/openai-compatible',
+          options: {
+            baseURL: 'https://api.senseaudio.cn',
+            apiKey: '{env:OPEN_DESIGN_BYOK_API_KEY}',
+          },
+        });
+        expect(provider?.models?.['deepseek-v4-flash']).toEqual({
+          name: 'deepseek-v4-flash',
+          limit: {
+            context: 128_000,
+            output: 16_384,
+          },
+        });
+        expect(JSON.stringify(parsed)).not.toContain('sk-test-byok');
+      },
+    );
+  });
+
+  it('passes keyless BYOK provider config without auth fields to OpenCode', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for BYOK OpenCode config tests');
+    }
+
+    const projectId = `proj-${randomUUID()}`;
+    const markerDir = await fsp.mkdtemp(join(tmpdir(), 'od-byok-opencode-keyless-'));
+    tempDirs.push(markerDir);
+    const envFile = join(markerDir, 'opencode-config-content.json');
+    const keyFile = join(markerDir, 'byok-key.txt');
+    const argsFile = join(markerDir, 'args.json');
+
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'BYOK keyless OpenCode fixture' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    await withFakeAgent(
+      'opencode',
+      `
+const fs = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(envFile)}, process.env.OPENCODE_CONFIG_CONTENT || '');
+  fs.writeFileSync(${JSON.stringify(keyFile)}, process.env.OPEN_DESIGN_BYOK_API_KEY || '');
+  fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: 'byok-opencode-keyless-ok' } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+      async () => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'byok-opencode',
+            projectId,
+            message: 'hello',
+            model: 'model',
+            byokProvider: {
+              protocol: 'openai',
+              apiKey: '',
+              baseUrl: 'http://127.0.0.1:8000/v1',
+              requiresApiKey: false,
+            },
+          }),
+        });
+        const body = await response.text();
+
+        expect(response.ok).toBe(true);
+        expect(body).toContain('byok-opencode-keyless-ok');
+
+        expect(await fsp.readFile(keyFile, 'utf8')).toBe('');
+        expect(JSON.parse(await fsp.readFile(argsFile, 'utf8'))).toEqual([
+          'run',
+          '--format',
+          'json',
+          '-m',
+          'open-design-byok/model',
+        ]);
+        const rawConfig = await fsp.readFile(envFile, 'utf8');
+        const parsed = JSON.parse(rawConfig) as {
+          provider?: Record<string, {
+            npm?: string;
+            options?: Record<string, unknown>;
+            models?: Record<string, unknown>;
+          }>;
+        };
+        const provider = parsed.provider?.['open-design-byok'];
+        expect(provider).toMatchObject({
+          npm: '@ai-sdk/openai',
+          options: {
+            baseURL: 'http://127.0.0.1:8000/v1',
+          },
+        });
+        expect(provider?.options).not.toHaveProperty('apiKey');
+        expect(rawConfig).not.toContain('OPEN_DESIGN_BYOK_API_KEY');
+      },
+    );
+  });
+
+  it('does not pass forged BYOK provider config to other local runtimes', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for BYOK OpenCode config tests');
+    }
+
+    const projectId = `proj-${randomUUID()}`;
+    const markerDir = await fsp.mkdtemp(join(tmpdir(), 'od-byok-opencode-isolation-'));
+    tempDirs.push(markerDir);
+    const envFile = join(markerDir, 'opencode-config-content.json');
+    const keyFile = join(markerDir, 'byok-key.txt');
+
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'BYOK isolation fixture' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    await withFakeAgent(
+      'opencode',
+      `
+const fs = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(envFile)}, process.env.OPENCODE_CONFIG_CONTENT || '');
+  fs.writeFileSync(${JSON.stringify(keyFile)}, process.env.OPEN_DESIGN_BYOK_API_KEY || '');
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: 'opencode-ok' } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+      async () => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'opencode',
+            projectId,
+            message: 'hello',
+            model: 'deepseek-v4-flash',
+            byokProvider: {
+              protocol: 'senseaudio',
+              apiKey: 'sk-test-byok',
+              baseUrl: 'https://api.senseaudio.cn',
+            },
+          }),
+        });
+        const body = await response.text();
+
+        expect(response.ok).toBe(true);
+        expect(body).toContain('opencode-ok');
+        expect(await fsp.readFile(keyFile, 'utf8')).toBe('');
+        expect(await fsp.readFile(envFile, 'utf8')).not.toContain('open-design-byok');
+        expect(await fsp.readFile(envFile, 'utf8')).not.toContain('sk-test-byok');
+      },
+    );
+  });
+
   it('strips inherited OpenCode server auth env before spawning the opencode CLI', async () => {
     const inheritedPassword = process.env.OPENCODE_SERVER_PASSWORD;
     process.env.OPENCODE_SERVER_PASSWORD = 'test-parent-server-password';
@@ -500,6 +734,62 @@ process.stdin.on('end', () => {
     } finally {
       verifyDb.close();
     }
+  });
+
+  it('does not leave a pinned assistant message queued when legacy chat fails before spawning', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for assistant message pin tests');
+    }
+    const projectId = `proj-${randomUUID()}`;
+    const assistantMessageId = `assistant-failed-${randomUUID()}`;
+
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Failed assistant pin fixture' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    const conversationsResponse = await fetch(`${baseUrl}/api/projects/${projectId}/conversations`);
+    expect(conversationsResponse.ok).toBe(true);
+    const conversationsBody = await conversationsResponse.json() as {
+      conversations: Array<{ id: string }>;
+    };
+    const conversationId = conversationsBody.conversations[0]?.id;
+    expect(conversationId).toBeTruthy();
+
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentId: `missing-agent-${randomUUID()}`,
+        projectId,
+        conversationId,
+        assistantMessageId,
+        message: 'fail before spawn',
+      }),
+    });
+    const body = await response.text();
+    expect(response.ok).toBe(true);
+    expect(body).toContain('unknown agent');
+
+    const dbFile = resolve(process.env.OD_DATA_DIR, 'app.sqlite');
+    let lastStatus: string | null = null;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const sqlite = new Database(dbFile, { readonly: true });
+      try {
+        const row = sqlite
+          .prepare(`SELECT run_status FROM messages WHERE id = ?`)
+          .get(assistantMessageId) as { run_status: string | null } | undefined;
+        lastStatus = row?.run_status ?? null;
+        if (lastStatus && lastStatus !== 'queued' && lastStatus !== 'running') break;
+      } finally {
+        sqlite.close();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect(lastStatus).toBe('failed');
   });
 
   it('rewrites the OpenCode scanner overflow into a generic retry message', async () => {
@@ -2129,6 +2419,54 @@ process.exit(0);
         expect(eventsBody).toContain('requested JSONL output');
         expect(eventsBody).not.toContain('event: error');
         expect(statusBody.status).toBe('succeeded');
+      },
+    );
+  });
+
+  it('fails plain-stream runs when stdout artifact persistence fails', async () => {
+    await withFakeAgent(
+      'agy',
+      `
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('1.107.0-test');
+  process.exit(0);
+}
+process.stdout.write('<artifact identifier="blocked" type="text/html" title="Blocked"><!doctype html><html><body>Name to confirm</body></html></artifact>\\n');
+process.exit(0);
+`,
+      async () => {
+        const projectId = `plain-artifact-fail-${randomUUID()}`;
+        const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: projectId, name: 'Plain artifact failure' }),
+        });
+        expect(createProjectResponse.ok).toBe(true);
+
+        const createResponse = await fetch(`${baseUrl}/api/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'antigravity',
+            projectId,
+            message: 'emit blocked artifact',
+          }),
+        });
+        expect(createResponse.status).toBe(202);
+        const { runId } = await createResponse.json() as { runId: string };
+
+        const eventsController = new AbortController();
+        const eventsResponse = await fetch(`${baseUrl}/api/runs/${runId}/events`, {
+          signal: eventsController.signal,
+        });
+        const eventsBody = await readSseUntil(eventsResponse, 'event: final');
+        eventsController.abort();
+        const statusBody = await waitForRunStatus(baseUrl, runId);
+
+        expect(eventsBody).toContain('event: error');
+        expect(eventsBody).toContain('plain-stream artifact');
+        expect(statusBody.status).toBe('failed');
       },
     );
   });

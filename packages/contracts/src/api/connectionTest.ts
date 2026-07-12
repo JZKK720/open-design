@@ -108,7 +108,55 @@ export function isBlockedExternalApiHostname(hostname: string): boolean {
   return Boolean(mapped && isBlockedIpv4(mapped));
 }
 
-export function validateBaseUrl(baseUrl: string, protocol?: string): BaseUrlValidationResult {
+// Normalized forms a hostname can be matched under: the bracket-stripped,
+// lowercased, trailing-dot-stripped string plus, for IPv4-mapped IPv6
+// literals, the dotted-quad form. Both an allowlist entry and a candidate
+// host are reduced through this so `10.0.0.5`, `10.0.0.5.`, `[::ffff:10.0.0.5]`
+// and `10.0.0.5` all compare equal.
+function internalHostMatchForms(hostname: string): string[] {
+  const normalized = normalizeBracketedIpv6(hostname);
+  const forms = new Set<string>([normalized]);
+  const mapped = ipv4MappedToDotted(hostname);
+  if (mapped) forms.add(mapped.toLowerCase());
+  return [...forms];
+}
+
+// Issue #3225 — explicit, operator-declared escape hatch from the
+// default-deny internal-IP guard. Returns true only when `hostname` matches
+// a host the operator deliberately trusted (see `OD_ALLOWED_INTERNAL_HOSTS`
+// on the daemon). An empty/absent allowlist always returns false, so the
+// strict default is preserved unless an operator opts in. This is consulted
+// ONLY for user-configured provider endpoints, never for the
+// attacker-controllable asset-download SSRF guard.
+export function isAllowlistedInternalHost(
+  hostname: string,
+  allowedInternalHosts?: readonly string[],
+): boolean {
+  if (!allowedInternalHosts || allowedInternalHosts.length === 0) return false;
+  const candidateForms = internalHostMatchForms(hostname);
+  for (const entry of allowedInternalHosts) {
+    if (typeof entry !== 'string' || !entry.trim()) continue;
+    const entryForms = internalHostMatchForms(entry.trim());
+    if (entryForms.some((form) => candidateForms.includes(form))) return true;
+  }
+  return false;
+}
+
+export interface ValidateBaseUrlOptions {
+  // Hosts the operator has explicitly declared trusted (issue #3225). Each
+  // entry is a bare hostname or IP literal; a host that matches is exempted
+  // from the internal-IP block. Defaults to none, keeping the strict
+  // default-deny behavior for every caller that does not opt in.
+  allowedInternalHosts?: readonly string[];
+  // Optional provider protocol hint. Ollama is allowed on RFC1918/private
+  // networks as a common local-hosted setup.
+  protocol?: string;
+}
+
+export function validateBaseUrl(
+  baseUrl: string,
+  options: ValidateBaseUrlOptions = {},
+): BaseUrlValidationResult {
   let parsed: ParsedBaseUrl;
   try {
     parsed = new URL(String(baseUrl).replace(/\/+$/, ''));
@@ -119,12 +167,12 @@ export function validateBaseUrl(baseUrl: string, protocol?: string): BaseUrlVali
     return { error: 'Only http/https allowed' };
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (!isLoopbackApiHost(hostname) && isBlockedExternalApiHostname(hostname)) {
-    // Ollama on RFC1918 is a common local-provider use case
-    // (e.g., Ollama on host with Docker Desktop for Windows).
-    // Loopback is still the preferred pattern; this is an exception
-    // for the ollama protocol only.
-    if (protocol === 'ollama') {
+  if (
+    !isLoopbackApiHost(hostname) &&
+    !isAllowlistedInternalHost(hostname, options.allowedInternalHosts) &&
+    isBlockedExternalApiHostname(hostname)
+  ) {
+    if (options.protocol === 'ollama') {
       return { parsed };
     }
     return { error: 'Internal IPs blocked', forbidden: true };

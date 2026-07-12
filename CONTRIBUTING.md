@@ -185,7 +185,7 @@ Hooking up a new agent (e.g. some new shop's `foo-coder` CLI) is one entry in [`
 }
 ```
 
-That's it — daemon will detect it on `PATH`, the picker shows it, the chat path works. If the CLI emits **typed events** (like Claude Code's `--output-format stream-json`), wire a parser in [`apps/daemon/src/claude-stream.ts`](apps/daemon/src/claude-stream.ts) and set `streamFormat: 'claude-stream-json'`.
+That's it — daemon will detect it on `PATH`, the picker shows it, the chat path works. If the CLI emits **typed events** (like Claude Code's `--output-format stream-json`), wire a parser in [`apps/daemon/src/runtimes/claude-stream.ts`](apps/daemon/src/runtimes/claude-stream.ts) and set `streamFormat: 'claude-stream-json'`.
 
 Bar for merging:
 
@@ -308,7 +308,7 @@ The tl;dr: ship good PRs, review thoughtfully, hang out in [Discussions][discuss
 
 ## License
 
-By contributing, you agree your contribution is licensed under the [Apache-2.0 License](LICENSE) of this repository, with the exception of files inside [`skills/guizang-ppt/`](skills/guizang-ppt/), which retain their original MIT license and authorship attribution to [op7418](https://github.com/op7418).
+By contributing, you agree your contribution is licensed under the [Apache-2.0 License](LICENSE) of this repository, except where a bundled skill or template carries its own `LICENSE` file. Known MIT-licensed exceptions include [`skills/guizang-ppt/`](skills/guizang-ppt/), which retains authorship attribution to [op7418](https://github.com/op7418), and [`skills/web-clone/`](skills/web-clone/), which retains authorship attribution to [Jane Xiaoer](https://github.com/Jane-xiaoer).
 
 [skill]: https://docs.anthropic.com/en/docs/claude-code/skills
 [guizang]: https://github.com/op7418/guizang-ppt-skill

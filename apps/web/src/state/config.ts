@@ -145,7 +145,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
   {
     label: 'MiniMax — Anthropic',
     protocol: 'anthropic',
-    baseUrl: 'https://api.minimaxi.com/anthropic',
+    baseUrl: 'https://api.minimax.io/anthropic',
     model: 'MiniMax-M2.7-highspeed',
     models: [
       'MiniMax-M2.7-highspeed',
@@ -318,7 +318,7 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
   {
     label: 'MiniMax — OpenAI',
     protocol: 'openai',
-    baseUrl: 'https://api.minimaxi.com/v1',
+    baseUrl: 'https://api.minimax.io/v1',
     model: 'MiniMax-M2.7-highspeed',
     models: [
       'MiniMax-M2.7-highspeed',
@@ -855,6 +855,7 @@ const DAEMON_OWNED_KEYS = new Set<keyof AppConfig>([
   'installationId',
   'telemetry',
   'privacyDecisionAt',
+  'allowSilentUpdates',
 ]);
 
 const AGENT_CLI_SECRET_ENV_KEYS = new Set([
@@ -947,8 +948,9 @@ export function mergeDaemonConfig(
   // never mints an id), which the Settings → Privacy field rendered as
   // "Opted out" even though the user never declined. We mint the id and
   // keep the default channels on so the displayed state matches the product
-  // default — the same metrics+content surface the first-run banner's "I
-  // get it" opt-in enables (artifactManifest stays off, as it does there).
+  // default — the same metrics+content surface the first-run banner's
+  // "Share" choice enables (artifactManifest stays off, as it
+  // does there).
   // This does NOT override an explicit opt-out: metrics === false short-
   // circuits the whole block, and any channel the user already turned off
   // is preserved via the nullish-coalesce.
@@ -960,6 +962,11 @@ export function mergeDaemonConfig(
       content: next.telemetry?.content ?? true,
       artifactManifest: next.telemetry?.artifactManifest ?? false,
     };
+  }
+  if (daemonConfig.allowSilentUpdates !== undefined) {
+    next.allowSilentUpdates = daemonConfig.allowSilentUpdates;
+  } else {
+    delete next.allowSilentUpdates;
   }
   if (daemonConfig.customInstructions !== undefined) {
     next.customInstructions = daemonConfig.customInstructions ?? undefined;
@@ -1084,6 +1091,7 @@ export async function syncConfigToDaemon(
     installationId: config.installationId,
     telemetry: config.telemetry,
     privacyDecisionAt: config.privacyDecisionAt,
+    allowSilentUpdates: config.allowSilentUpdates,
     customInstructions: config.customInstructions ?? null,
     projectLocations: config.projectLocations ?? [],
     defaultProjectLocationId: config.defaultProjectLocationId ?? 'default',

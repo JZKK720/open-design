@@ -34,8 +34,8 @@ import {
   mergeProxyAwareEnv,
   resolveSystemProxyEnv,
 } from '@open-design/platform';
-import { attachAcpSession } from './acp.js';
-import { attachPiRpcSession } from './pi-rpc.js';
+import { attachAcpSession } from './agent-protocol/index.js';
+import { attachPiRpcSession } from './agent-protocol/index.js';
 import { createClaudeStreamHandler } from './runtimes/claude-stream.js';
 import { diagnoseClaudeCliFailure } from './claude-diagnostics.js';
 import { createCopilotStreamHandler } from './copilot-stream.js';
@@ -56,14 +56,16 @@ import {
 import { aihubmixHeaders } from './integrations/aihubmix.js';
 import type { AgentCliEnvPrefs } from './app-config.js';
 import type { RuntimeAgentDef } from './runtimes/types.js';
-import { resolveModelForAgent } from './runtimes/models.js';
 import { preparePromptFileForAgent, type PreparedPromptFile } from './runtimes/prompt-file.js';
+import { configuredAllowedInternalHosts } from './origin-validation.js';
 import {
+  isAllowlistedInternalHost,
   isBlockedExternalApiHostname,
   isLoopbackApiHost,
   validateBaseUrl,
   type AgentTestRequest,
   type BaseUrlValidationResult,
+  type ValidateBaseUrlOptions,
   type ConnectionTestDiagnostics,
   type ConnectionTestKind,
   type ConnectionTestPhase,
@@ -73,7 +75,19 @@ import {
   type ProviderTestRequest,
 } from '@open-design/contracts/api/connectionTest';
 import { googleGenerateContentUrl } from './integrations/google-models.js';
-import { resolveAmrProfile } from './integrations/vela.js';
+import { readVelaCredentialRevision, resolveAmrProfile } from './integrations/vela.js';
+import { amrModelLoadingCache } from './runtimes/amr-model-cache.js';
+import { buildAmrModelCacheKey } from './runtimes/amr-model-probe.js';
+import {
+  fetchVelaPresetModels,
+  fetchVelaRemoteModelsWithRetry,
+} from './runtimes/defs/amr.js';
+import {
+  getRememberedLiveModels,
+  preferFreshLiveModels,
+  resolveDefaultModelFromOptions,
+  resolveModelForAgent,
+} from './runtimes/models.js';
 
 export { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
 
@@ -113,14 +127,20 @@ function looksLikeIpLiteral(hostname: string): boolean {
 export async function validateBaseUrlResolved(
   baseUrl: string,
   lookup: DnsLookupFn = defaultDnsLookup,
-  protocol?: string,
+  options: ValidateBaseUrlOptions = {},
 ): Promise<BaseUrlValidationResult> {
-  const sync = validateBaseUrl(baseUrl, protocol);
+  const sync = validateBaseUrl(baseUrl, options);
   if (sync.error || !sync.parsed) return sync;
 
   const hostname = sync.parsed.hostname.toLowerCase();
   if (isLoopbackApiHost(hostname)) return sync;
+  // Issue #3225 — an operator who trusts this hostname has opted it out of the
+  // guard entirely, so skip the resolved-IP block even though it points into
+  // private space. The sync check above already honored a literal-IP allowlist
+  // entry; this covers the hostname-that-resolves-private case.
+  if (isAllowlistedInternalHost(hostname, options.allowedInternalHosts)) return sync;
   if (looksLikeIpLiteral(hostname)) return sync;
+  const protocol = options.protocol;
 
   let addresses: DnsLookupAddress[];
   try {
@@ -132,6 +152,10 @@ export async function validateBaseUrlResolved(
   for (const addr of addresses) {
     const ip = String(addr.address).toLowerCase();
     if (isLoopbackApiHost(ip)) continue;
+    // A resolved address the operator explicitly allowlisted (they listed the
+    // IP rather than the hostname) is permitted; everything else in private
+    // space is still blocked.
+    if (isAllowlistedInternalHost(ip, options.allowedInternalHosts)) continue;
     if (isBlockedExternalApiHostname(ip)) {
       // Ollama on RFC1918 is a common local-provider use case; allow it.
       if (protocol === 'ollama') continue;
@@ -140,6 +164,30 @@ export async function validateBaseUrlResolved(
   }
 
   return sync;
+}
+
+/**
+ * Validate a base URL that the USER deliberately configured as a provider
+ * endpoint (connection test, model discovery, BYOK chat dispatch). Identical
+ * to {@link validateBaseUrlResolved} except it honors the operator's
+ * `OD_ALLOWED_INTERNAL_HOSTS` allowlist (issue #3225), so an internally hosted
+ * gateway on an RFC1918 address can be reached when — and only when — the
+ * operator opted in.
+ *
+ * INVARIANT: use this ONLY for user-configured endpoints. URLs that arrive
+ * inside an upstream response (image/video download links) are
+ * attacker-controllable and MUST stay on the strict {@link assertExternalAssetUrl}
+ * / {@link validateBaseUrlResolved} path, which never consults the allowlist.
+ */
+export function validateUserProviderBaseUrl(
+  baseUrl: string,
+  protocol?: string,
+  lookup: DnsLookupFn = defaultDnsLookup,
+): Promise<BaseUrlValidationResult> {
+  return validateBaseUrlResolved(baseUrl, lookup, {
+    allowedInternalHosts: configuredAllowedInternalHosts(),
+    ...(protocol ? { protocol } : {}),
+  });
 }
 
 /**
@@ -1293,7 +1341,7 @@ export async function testProviderConnection(
   const start = Date.now();
   const model = String(input.model ?? '');
   const normalizedInput = normalizeProviderTestInput(input);
-  const validated = await validateBaseUrlResolved(normalizedInput.baseUrl, defaultDnsLookup, input.protocol);
+  const validated = await validateUserProviderBaseUrl(normalizedInput.baseUrl, input.protocol);
   if (validated.error || !validated.parsed) {
     const kind: ConnectionTestKind = validated.forbidden ? 'forbidden' : 'invalid_base_url';
     return {
@@ -1824,7 +1872,15 @@ function attachAgentStreamHandlers(
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
   if (def.streamFormat === 'claude-stream-json') {
-    const claude = createClaudeStreamHandler((ev: unknown) => send('agent', ev));
+    const claude = createClaudeStreamHandler((ev: unknown) => {
+      const data = (ev ?? {}) as { type?: unknown; terminal?: unknown };
+      // Terminal result-frame errors are already classified by this sink's own
+      // result-frame parse (#4501) with the accurate `output_parse` phase;
+      // forwarding the parser's error event would race it into the generic
+      // spawn-phase stream-error path first.
+      if (data.type === 'error' && data.terminal === true) return;
+      send('agent', ev);
+    });
     child.stdout?.on('data', (chunk: string) => {
       appendRawStdout?.(chunk);
       claude.feed(chunk);
@@ -1848,12 +1904,9 @@ function attachAgentStreamHandlers(
       child,
       prompt,
       cwd,
-      // Same substitution as the chat-run path in server.ts — adapters whose
-      // CLI rejects the synthetic 'default' (e.g. AMR / vela, which forces
-      // session/set_model before session/prompt) need the def's first
-      // concrete fallback id here too, otherwise Test connection deadlocks
-      // on the same `session/set_model must be called before session/prompt`
-      // error the chat-run path already handles.
+      // Same substitution as the chat-run path in server.ts: omitted models can
+      // resolve to a concrete fallback, while an explicit 'default' is preserved
+      // so ACP runtimes can use their upstream configured default.
       model: resolveModelForAgent(def as never, model ?? null, modelEnv, liveModelScope),
       mcpServers: [],
       send,
@@ -1931,11 +1984,41 @@ async function prepareOpenCodeConnectionTestCwd(tempDir: string): Promise<void> 
   }
 }
 
+async function resolveConnectionTestModelForAgent(
+  def: RuntimeAgentDef,
+  requestedModel: string | null,
+  env: NodeJS.ProcessEnv,
+  liveModelScope: string | null,
+  launchPath?: string | null,
+): Promise<string | null> {
+  const resolved = resolveModelForAgent(def, requestedModel, env, liveModelScope);
+  if (def.id !== 'amr' || resolved !== 'default' || !launchPath) return resolved;
+
+  try {
+    const cacheKey = buildAmrModelCacheKey({
+      launchPath,
+      env,
+      credentialRevision: readVelaCredentialRevision(env),
+    });
+    const catalog = await amrModelLoadingCache.get(cacheKey, {
+      fetchPreset: () => fetchVelaPresetModels(launchPath, env),
+      fetchRemote: () => fetchVelaRemoteModelsWithRetry(launchPath, env),
+    });
+    const liveModels = preferFreshLiveModels(
+      catalog.models ?? [],
+      getRememberedLiveModels(def.id, liveModelScope),
+    );
+    return resolveDefaultModelFromOptions(liveModels) ?? resolved;
+  } catch {
+    return resolved;
+  }
+}
+
 async function testAgentConnectionInternal(
   input: AgentConnectionInput,
 ): Promise<ConnectionTestResponse> {
   const start = Date.now();
-  const model =
+  let model =
     typeof input.model === 'string' && input.model.trim()
       ? input.model.trim()
       : 'default';
@@ -2189,6 +2272,13 @@ async function testAgentConnectionInternal(
       ...baseEnv,
       ...(mmdRouteLaunchEnv || {}),
     }, executableResolution);
+    model = await resolveConnectionTestModelForAgent(
+      def,
+      model,
+      env,
+      liveModelScope,
+      executableResolution.launchPath,
+    ) ?? model;
     const auth = await probeAgentAuthStatus(def, executableResolution.launchPath, env);
     if (auth?.status === 'missing') {
       // Preflight auth probe runs after binary resolution but before the
@@ -2246,7 +2336,7 @@ async function testAgentConnectionInternal(
       child,
       SMOKE_PROMPT,
       tempDir,
-      input.model,
+      model,
       env,
       liveModelScope,
       sink.send,

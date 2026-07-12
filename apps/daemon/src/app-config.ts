@@ -113,6 +113,7 @@ export interface AppConfigPrefs {
   installationId?: string | null;
   telemetry?: TelemetryPrefs;
   privacyDecisionAt?: number | null;
+  allowSilentUpdates?: boolean;
   orbit?: OrbitConfigPrefs;
   customInstructions?: string | null;
   projectLocations?: ProjectLocationPrefs[];
@@ -141,6 +142,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'installationId',
   'telemetry',
   'privacyDecisionAt',
+  'allowSilentUpdates',
   'orbit',
   'customInstructions',
   'projectLocations',
@@ -362,7 +364,7 @@ export function agentCliEnvForAgent(
   agentId: string,
 ): Record<string, string> {
   if (!prefs || typeof agentId !== 'string') return {};
-  const env = prefs[agentId];
+  const env = prefs[agentId === 'byok-opencode' ? 'opencode' : agentId];
   if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
   return { ...env };
 }
@@ -556,6 +558,14 @@ function applyConfigValue(
       value === null ||
       (typeof value === 'number' && Number.isFinite(value) && value >= 0)
     ) {
+      target[key] = value;
+    } else {
+      delete target[key];
+    }
+    return;
+  }
+  if (key === 'allowSilentUpdates') {
+    if (typeof value === 'boolean') {
       target[key] = value;
     } else {
       delete target[key];

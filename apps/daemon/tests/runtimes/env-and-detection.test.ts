@@ -5,7 +5,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as platform from '@open-design/platform';
 import {
-  assert, chmodSync, detectAgents, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
+  assert, chmodSync, detectAgents, detectAgentsStream, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
 } from './helpers/test-helpers.js';
 import { isCursorAuthFailureText } from '../../src/runtimes/auth.js';
 import { getRememberedLiveModels } from '../../src/runtimes/models.js';
@@ -80,6 +80,60 @@ test('spawnEnvForAgent applies configured Codex env without mutating the base en
   assert.equal(env.PATH, '/usr/bin');
   assert.equal('CODEX_HOME' in base, false);
   assert.equal('CODEX_BIN' in base, false);
+});
+
+test('spawnEnvForAgent backfills Windows cache directory env for Trae CLI launches', () => {
+  const env = withPlatform('win32', () =>
+    spawnEnvForAgent(
+      'trae-cli',
+      {
+        Path: 'C:\\Windows\\System32',
+        USERPROFILE: 'C:\\Users\\ai',
+      },
+      {},
+      {},
+    ),
+  );
+
+  assert.equal(env.USERPROFILE, 'C:\\Users\\ai');
+  assert.equal(env.APPDATA, 'C:\\Users\\ai\\AppData\\Roaming');
+  assert.equal(env.LOCALAPPDATA, 'C:\\Users\\ai\\AppData\\Local');
+  assert.equal(env.TEMP, 'C:\\Users\\ai\\AppData\\Local\\Temp');
+  assert.equal(env.TMP, 'C:\\Users\\ai\\AppData\\Local\\Temp');
+});
+
+test('spawnEnvForAgent keeps Windows cache directory env inside sandbox roots', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'od-agent-env-sandbox-win-cache-'));
+  try {
+    const env = withPlatform('win32', () =>
+      spawnEnvForAgent(
+        'trae-cli',
+        {
+          OD_DATA_DIR: dataDir,
+          OD_SANDBOX_MODE: '1',
+          Path: 'C:\\Windows\\System32',
+          USERPROFILE: 'C:\\Users\\ai',
+        },
+        {},
+        {},
+      ),
+    );
+
+    const agentHome = join(dataDir, 'sandbox', 'agent-home');
+    const tempDir = join(dataDir, 'sandbox', 'tmp');
+    const normalize = (value: string | undefined): string =>
+      (value ?? '').replaceAll('\\', '/');
+
+    assert.equal(env.USERPROFILE, agentHome);
+    assert.ok(normalize(env.APPDATA).startsWith(`${normalize(agentHome)}/`));
+    assert.ok(normalize(env.LOCALAPPDATA).startsWith(`${normalize(agentHome)}/`));
+    assert.equal(env.TEMP, tempDir);
+    assert.equal(env.TMP, tempDir);
+    assert.ok(!normalize(env.APPDATA).includes('C:/Users/ai'));
+    assert.ok(!normalize(env.LOCALAPPDATA).includes('C:/Users/ai'));
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test('spawnEnvForAgent reapplies sandbox state roots after configured env overrides', () => {
@@ -922,6 +976,48 @@ test('detectAgents applies configured env while probing the CLI', async () => {
       const detected = agents.find((agent) => agent.id === 'claude');
       assert.equal(detected?.available, true);
       assert.equal(detected?.version, '/tmp/claude-config-probe');
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectAgents reuses the opencode configured env for byok-opencode availability', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-byok-opencode-detect-'));
+  try {
+    await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
+      const bin = join(dir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+      if (process.platform === 'win32') {
+        writeFileSync(
+          bin,
+          '@echo off\r\nif "%~1"=="--version" echo byok-opencode-test& exit /b 0\r\nif "%~1"=="models" echo openai/gpt-5& exit /b 0\r\nexit /b 0\r\n',
+        );
+      } else {
+        writeFileSync(
+          bin,
+          '#!/bin/sh\nif [ "$1" = "--version" ]; then echo byok-opencode-test; exit 0; fi\nif [ "$1" = "models" ]; then echo openai/gpt-5; exit 0; fi\nexit 0\n',
+        );
+        chmodSync(bin, 0o755);
+      }
+      process.env.PATH = '';
+      process.env.OD_AGENT_HOME = dir;
+
+      const configuredEnv = { opencode: { OPENCODE_BIN: bin } };
+      const agents = await detectAgents(configuredEnv);
+      const detected = agents.find((agent) => agent.id === 'byok-opencode');
+
+      assert.equal(detected?.available, true);
+      assert.equal(detected?.path, bin);
+      assert.equal(detected?.version, 'byok-opencode-test');
+
+      const streamed: string[] = [];
+      for await (const agent of detectAgentsStream(configuredEnv)) {
+        if (agent.id === 'byok-opencode') {
+          streamed.push(`${agent.available}:${agent.path}:${agent.version}`);
+        }
+      }
+
+      assert.deepEqual(streamed, [`true:${bin}:byok-opencode-test`]);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
