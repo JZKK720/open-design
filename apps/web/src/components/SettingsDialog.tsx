@@ -390,6 +390,12 @@ interface Props {
    * incremental save, not a final commit.
    */
   onPersist: (cfg: AppConfig, options?: { forceMediaProviderSync?: boolean }) => Promise<void> | void;
+  /**
+   * Non-optimistic write for the daemon-owned silent-update preference.
+   * Settings → About uses this instead of the generic autosave path so a
+   * failed `/api/app-config` cannot leave app-wide config on the rejected value.
+   */
+  onSilentUpdatePreferenceChange?: (allowSilentUpdates: boolean) => Promise<void>;
   onDraftChange?: (cfg: AppConfig) => void;
   /**
    * Persist the Composio API key separately from the broader autosave
@@ -1330,6 +1336,7 @@ export function SettingsDialog({
   initialSection = 'execution',
   initialHighlight = null,
   onPersist,
+  onSilentUpdatePreferenceChange,
   onPersistComposioKey,
   composioConfigLoading = false,
   onClose,
@@ -2709,7 +2716,7 @@ export function SettingsDialog({
   };
 
   const apiProtocol = cfg.apiProtocol ?? 'anthropic';
-  const apiKeyConsoleLink = API_KEY_CONSOLE_LINKS[apiProtocol];
+  const defaultApiKeyConsoleLink = API_KEY_CONSOLE_LINKS[apiProtocol];
   const byokProviderPresets: ReadonlyArray<ByokProviderPreset> = [
     {
       id: 'anthropic',
@@ -2724,6 +2731,13 @@ export function SettingsDialog({
       protocol: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o',
+    },
+    {
+      id: 'atlascloud',
+      title: 'Atlas Cloud',
+      protocol: 'openai',
+      baseUrl: 'https://api.atlascloud.ai/v1',
+      model: 'qwen/qwen3.5-flash',
     },
     {
       id: 'google-ai-studio',
@@ -2747,10 +2761,17 @@ export function SettingsDialog({
       model: '',
     },
     {
-      id: 'siliconflow',
-      title: '硅基流动',
+      id: 'siliconflow-cn',
+      title: 'SiliconFlow (CN)',
       protocol: 'openai',
       baseUrl: 'https://api.siliconflow.cn/v1',
+      model: 'deepseek-ai/DeepSeek-V3.1',
+    },
+    {
+      id: 'siliconflow-global',
+      title: 'SiliconFlow (Global)',
+      protocol: 'openai',
+      baseUrl: 'https://api.siliconflow.com/v1',
       model: 'deepseek-ai/DeepSeek-V3.1',
     },
     {
@@ -3028,6 +3049,11 @@ export function SettingsDialog({
   // Skip the very first effect tick so just opening the dialog doesn't
   // appear to "save" anything before the user has touched a field.
   const autosaveSkipFirstRef = useRef(true);
+  // Silent-update toggles use a dedicated non-optimistic path; skip the next
+  // autosave effect tick so we do not double-write through handleConfigPersist.
+  const suppressNextAutosaveRef = useRef(false);
+  const silentUpdateWriteTokenRef = useRef(0);
+  const [silentUpdateBusy, setSilentUpdateBusy] = useState(false);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSavedTimerRef = useRef<number | null>(null);
   const autosaveRetryTimerRef = useRef<number | null>(null);
@@ -3048,6 +3074,10 @@ export function SettingsDialog({
     if (autosaveSkipFirstRef.current) {
       autosaveSkipFirstRef.current = false;
       autosaveLastSavedRef.current = cfg;
+      return;
+    }
+    if (suppressNextAutosaveRef.current) {
+      suppressNextAutosaveRef.current = false;
       return;
     }
     setAutosaveStatus('pending');
@@ -3194,6 +3224,8 @@ export function SettingsDialog({
           (p) => p.baseUrl === cfg.apiProviderBaseUrl && p.baseUrl === cfg.baseUrl,
         );
   const selectedProvider = selectedProviderIndex >= 0 ? protocolProviders[selectedProviderIndex] : undefined;
+  const apiKeyConsoleLink =
+    selectedProvider?.apiKeyConsoleLink ?? defaultApiKeyConsoleLink;
   const showProviderPreset =
     protocolProviders.length > 0 && !isFixedOriginGateway(apiProtocol);
   // Fixed-origin gateways resolve their Base URL automatically; nothing for the
@@ -3301,8 +3333,14 @@ export function SettingsDialog({
     ),
     [apiProtocol, cfg.baseUrl, cfg.apiKey, cfg.apiVersion],
   );
+  const providerModelDiscoveryUnavailable =
+    apiProtocol !== 'azure' &&
+    apiProtocol !== 'ollama' &&
+    isProviderModelDiscoveryUnsupported(apiProtocol, cfg.baseUrl);
   const fetchedApiModelOptions =
-    activeProviderModelsCache[providerModelsKey] ?? [];
+    providerModelDiscoveryUnavailable
+      ? []
+      : activeProviderModelsCache[providerModelsKey] ?? [];
   const commitProviderModelsInputs = () => {
     if (
       byokFirstPartyBaseUrl?.hostTypo ||
@@ -3450,12 +3488,19 @@ export function SettingsDialog({
       )
       : null;
   const suggestedApiModelIds = useMemo(
-    () => Array.from(new Set(
-      selectedProvider?.models?.length
-        ? selectedProvider.models
-        : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
-    )),
-    [apiProtocol, selectedProvider],
+    () => {
+      if (providerModelDiscoveryUnavailable) {
+        return selectedProvider?.models?.length
+          ? Array.from(new Set(selectedProvider.models))
+          : [];
+      }
+      return Array.from(new Set(
+        selectedProvider?.models?.length
+          ? selectedProvider.models
+          : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+      ));
+    },
+    [apiProtocol, selectedProvider, providerModelDiscoveryUnavailable],
   );
   const apiModelOptions = useMemo(
     () => mergeProviderModelOptions(
@@ -5646,13 +5691,63 @@ export function SettingsDialog({
                 <label className="settings-about-toggle">
                   <input
                     checked={cfg.allowSilentUpdates === true}
+                    data-testid="settings-allow-silent-updates"
+                    disabled={silentUpdateBusy}
                     type="checkbox"
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      // Capture before setState: React clears event.currentTarget
+                      // after the handler returns, and the functional updater can
+                      // run later when SettingsDialog already has pending lanes
+                      // (about-updater status, autosave indicator, etc.).
+                      const allowSilentUpdates = event.currentTarget.checked;
+                      const previous = cfg.allowSilentUpdates;
+                      // Dedicated non-optimistic path: do not flush through
+                      // handleConfigPersist (which setConfig before daemon write).
+                      // Serialize via busy + write token so a slow earlier save
+                      // cannot re-apply UI after a later toggle.
+                      const writeToken = ++silentUpdateWriteTokenRef.current;
+                      suppressNextAutosaveRef.current = true;
                       setCfg((current) => ({
                         ...current,
-                        allowSilentUpdates: event.currentTarget.checked,
-                      }))
-                    }
+                        allowSilentUpdates,
+                      }));
+                      if (onSilentUpdatePreferenceChange == null) return;
+                      setSilentUpdateBusy(true);
+                      void (async () => {
+                        try {
+                          await onSilentUpdatePreferenceChange(allowSilentUpdates);
+                          if (writeToken !== silentUpdateWriteTokenRef.current) return;
+                          // Only advance the baseline for this daemon-owned field.
+                          // Spreading autosaveLatestRef would stamp any concurrent
+                          // draft (theme, accent, …) as already saved and let the
+                          // generic autosave skip a real onPersist for that edit.
+                          autosaveLastSavedRef.current = {
+                            ...autosaveLastSavedRef.current,
+                            allowSilentUpdates,
+                          };
+                          setAutosaveStatus('saved');
+                          if (autosaveSavedTimerRef.current != null) {
+                            window.clearTimeout(autosaveSavedTimerRef.current);
+                          }
+                          autosaveSavedTimerRef.current = window.setTimeout(() => {
+                            autosaveSavedTimerRef.current = null;
+                            setAutosaveStatus((curr) => (curr === 'saved' ? 'idle' : curr));
+                          }, 1800);
+                        } catch {
+                          if (writeToken !== silentUpdateWriteTokenRef.current) return;
+                          suppressNextAutosaveRef.current = true;
+                          setCfg((current) => ({
+                            ...current,
+                            allowSilentUpdates: previous,
+                          }));
+                          setAutosaveStatus('error');
+                        } finally {
+                          if (writeToken === silentUpdateWriteTokenRef.current) {
+                            setSilentUpdateBusy(false);
+                          }
+                        }
+                      })();
+                    }}
                   />
                   <span className="settings-about-toggle-copy">
                     <span>{t('settings.allowSilentUpdates')}</span>

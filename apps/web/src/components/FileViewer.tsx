@@ -18,6 +18,7 @@ import {
 } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
 import { exportErrorCode } from '../analytics/export-error-code';
+import { deployErrorCode } from '../analytics/deploy-error-code';
 import { trackIframeLoad } from '../observability/iframe-error';
 import {
   trackArtifactExportResult,
@@ -116,7 +117,13 @@ import { copyToClipboard } from '../lib/copy-to-clipboard';
 import { buildReactComponentSrcdoc } from '../runtime/react-component';
 import { shouldConsumeSlideNav } from '../runtime/slide-nav';
 import { findHtmlEntriesReferencing } from '../runtime/jsx-module-refs';
-import { buildLazySrcdocTransport, buildSrcdoc, canActivateSrcDocTransport } from '../runtime/srcdoc';
+import {
+  buildLazySrcdocTransport,
+  buildRedirectLoopBlockedDoc,
+  buildSrcdoc,
+  canActivateSrcDocTransport,
+  PREVIEW_REDIRECT_LOOP_MESSAGE,
+} from '../runtime/srcdoc';
 import { DeckThumbnailRail } from './DeckThumbnailRail';
 import { parseDeckThumbnails } from '../runtime/deck-thumbnail-parser';
 import {
@@ -131,9 +138,11 @@ import {
   upsertSpeakerNotesInHtml,
 } from '../runtime/speaker-notes';
 import {
+  hasTweaksTemplate,
   hasUrlModeBridge,
   htmlNeedsFocusGuard,
   htmlNeedsPoweredPreview,
+  htmlNeedsRedirectGuard,
   htmlNeedsSandboxShim,
   parseForceInline,
   shouldUrlLoadHtmlPreview,
@@ -284,6 +293,18 @@ const POWERED_PREVIEW_ALLOW =
   'accelerometer; autoplay; camera; cross-origin-isolated; fullscreen; gamepad; gyroscope; microphone; xr-spatial-tracking';
 const HTML_PASSIVE_PREVIEW_FULL_TEXT_LIMIT = 2 * 1024 * 1024;
 const HTML_ROUTING_TEXT_PREVIEW_LIMIT = 96 * 1024;
+type HtmlSourceLoadMode = 'full' | 'routing-preview';
+
+function previewTextNeedsFullSourceForSafeInline(source: string | null): boolean {
+  if (!source) return false;
+  return (
+    htmlNeedsSandboxShim(source) ||
+    htmlNeedsFocusGuard(source) ||
+    htmlNeedsRedirectGuard(source) ||
+    hasTweaksTemplate(source)
+  );
+}
+
 const PREVIEW_VIEWPORT_PRESETS: PreviewViewportPreset[] = [
   {
     id: 'desktop',
@@ -6798,7 +6819,11 @@ function HtmlViewer({
       // switches but before the effect has run.
     }
     let cancelled = false;
-    if (shouldDeferPassivePreviewSource && sourceRef.current !== null) {
+    if (
+      shouldDeferPassivePreviewSource &&
+      sourceRef.current !== null &&
+      !previewTextNeedsFullSourceForSafeInline(sourceRef.current)
+    ) {
       setRoutingSource(sourceRef.current);
       sourceEverLoadedRef.current = true;
       return () => {
@@ -6817,15 +6842,30 @@ function HtmlViewer({
       ? fetchProjectFileTextPreview(projectId, file.name, {
           limit: HTML_ROUTING_TEXT_PREVIEW_LIMIT,
           cacheBustKey,
-        }).then((preview) => ({
-          text: preview?.text ?? null,
-          poweredPreviewRequired: preview?.poweredPreview.required === true,
-        }))
+        }).then(async (preview) => {
+          const previewText = preview?.text ?? null;
+          if (previewTextNeedsFullSourceForSafeInline(previewText)) {
+            const fullText = await fetchProjectFileText(projectId, file.name, { cacheBustKey });
+            if (fullText !== null) {
+              return {
+                text: fullText,
+                poweredPreviewRequired: preview?.poweredPreview.required === true,
+                sourceLoadMode: 'full' as HtmlSourceLoadMode,
+              };
+            }
+          }
+          return {
+            text: previewText,
+            poweredPreviewRequired: preview?.poweredPreview.required === true,
+            sourceLoadMode: 'routing-preview' as HtmlSourceLoadMode,
+          };
+        })
       : fetchProjectFileText(projectId, file.name, { cacheBustKey }).then((text) => ({
-          text,
-          poweredPreviewRequired: false,
-        }));
-    void loadText.then(({ text, poweredPreviewRequired }) => {
+        text,
+        poweredPreviewRequired: false,
+        sourceLoadMode: 'full' as HtmlSourceLoadMode,
+      }));
+    void loadText.then(({ text, poweredPreviewRequired, sourceLoadMode }) => {
       if (cancelled) return;
       setServerPoweredPreviewRequired(poweredPreviewRequired);
       // Chokidar emits agent rewrites as unlink+add+change bursts; a
@@ -6872,7 +6912,7 @@ function HtmlViewer({
       sourceEverLoadedRef.current = true;
       lastGoodSourceForRoutingRef.current = text;
       setRoutingSource(text);
-      if (shouldDeferPassivePreviewSource) {
+      if (sourceLoadMode === 'routing-preview') {
         sourceRef.current = null;
       } else {
         setSource(text);
@@ -7057,6 +7097,19 @@ function HtmlViewer({
     const s = routingHtmlSource;
     return s != null && htmlNeedsFocusGuard(s);
   }, [passiveLargeHtmlPreview, routingHtmlSource]);
+  // A self-redirecting artifact must render through srcDoc so buildSrcdoc's
+  // redirect-loop guard is present; on the raw URL-load path the iframe reloads
+  // itself forever and freezes the workspace (nexu-io/open-design#710).
+  const needsRedirectGuard = useMemo(() => {
+    if (passiveLargeHtmlPreview) return false;
+    const s = routingHtmlSource;
+    return s != null && htmlNeedsRedirectGuard(s);
+  }, [passiveLargeHtmlPreview, routingHtmlSource]);
+  // Set by the injected guard's `od:redirect-loop-blocked` postMessage. The
+  // browser makes `window.location` unforgeable, so a runaway reload can only be
+  // stopped host-side — parking the srcDoc iframe on static content below. File-
+  // scoped: reset whenever the file, project, or reload key changes.
+  const [redirectLoopBlocked, setRedirectLoopBlocked] = useState(false);
   // Project file paths, for confirming root-relative asset refs
   // (`/reference-assets/main.css`) against real files instead of guessing
   // from path shape. `null` while the list is in flight — the detection memo
@@ -7105,6 +7158,7 @@ function HtmlViewer({
     drawMode: drawOverlayOpen,
     forceInline: (forceInline || needsSandboxShim) && !needsPowered,
     needsFocusGuard: needsFocusGuard && !needsPowered,
+    needsRedirectGuard: needsRedirectGuard && !needsPowered,
     projectRootAssetRefs,
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
@@ -7183,6 +7237,28 @@ function HtmlViewer({
   useEffect(() => {
     iframeRef.current = useUrlLoadPreview ? urlPreviewIframeRef.current : srcDocPreviewIframeRef.current;
   }, [useUrlLoadPreview]);
+  // Clear a redirect-loop park whenever the artifact changes or the user hits
+  // reload (reloadKey bump): the previewed content is fresh, so give it a clean
+  // run rather than staying pinned on the "loop detected" placeholder.
+  useEffect(() => {
+    setRedirectLoopBlocked(false);
+  }, [projectId, file.name, reloadKey]);
+  // The injected redirect guard posts `od:redirect-loop-blocked` when a preview
+  // reloads itself past its hop budget. Only trust our own two preview frames,
+  // then park the srcDoc iframe on static content so the loop cannot continue.
+  useEffect(() => {
+    function onMessage(ev: MessageEvent) {
+      const fromPreview =
+        ev.source === srcDocPreviewIframeRef.current?.contentWindow ||
+        ev.source === urlPreviewIframeRef.current?.contentWindow;
+      if (!fromPreview) return;
+      const data = ev.data as { type?: string } | null;
+      if (data?.type !== PREVIEW_REDIRECT_LOOP_MESSAGE) return;
+      setRedirectLoopBlocked(true);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   // Resolve the cross-origin powered-preview URL for artifacts that need it.
   // `resolved:false` means the (cached) daemon isolation probe is still in
@@ -7413,7 +7489,16 @@ function HtmlViewer({
   // re-load. Direct-mount path (no #2361/#2791 postMessage race).
   const useLazySrcDocTransport =
     !manualEditRequiresSrcDoc && !captureModeActive && useUrlLoadPreview && !srcDocMaterialized;
-  const srcDocTransportContent = useLazySrcDocTransport ? lazySrcDocTransport : srcDoc;
+  // Park on a static "loop detected" document once the guard reports a runaway
+  // redirect. A self-redirecting artifact is forced onto the srcDoc iframe by
+  // `needsRedirectGuard`, so swapping this content is the reliable stop — the
+  // placeholder carries no redirect, so the frame settles the moment it loads.
+  const redirectLoopBlockedDoc = useMemo(() => buildRedirectLoopBlockedDoc(), []);
+  const srcDocTransportContent = redirectLoopBlocked
+    ? redirectLoopBlockedDoc
+    : useLazySrcDocTransport
+      ? lazySrcDocTransport
+      : srcDoc;
   // Materialize the srcDoc iframe the first time it actually becomes the active
   // (visible) transport — i.e. the first Mark/Edit/Comment/Inspect entry. We do
   // NOT pre-render it while hidden/idle: that ran a second live copy during
@@ -9565,7 +9650,7 @@ function HtmlViewer({
       }
       fireDeployResult(
         'failed',
-        tokenRequired ? 'CONFIG_REQUIRED' : err instanceof Error ? err.name : 'UNKNOWN',
+        tokenRequired ? 'CONFIG_REQUIRED' : deployErrorCode(err),
       );
     } finally {
       setDeploying(false);
@@ -12888,7 +12973,7 @@ function HtmlViewer({
         </div>,
         document.body,
       ) : null}
-      {deploySavedToast ? (
+      {deploySavedToast && typeof document !== 'undefined' ? createPortal(
         <Toast
           message={deploySavedToast.message}
           details={deploySavedToast.details}
@@ -12896,7 +12981,8 @@ function HtmlViewer({
           placement="top"
           ttlMs={3600}
           onDismiss={() => setDeploySavedToast(null)}
-        />
+        />,
+        document.body,
       ) : null}
       {deployActionToast && typeof document !== 'undefined' ? createPortal(
         <Toast

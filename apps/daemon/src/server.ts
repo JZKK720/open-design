@@ -18,8 +18,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import { executionProfileFromStreamFormat, PLUGIN_SHARE_ACTION_PLUGIN_IDS } from '@open-design/contracts';
+import { isTodoWriteToolName, stopReasonIsTruncation, todoItemsFromTodoWriteInput } from '@open-design/contracts';
 import {
   composeSystemPrompt,
+  detectDeckIntentSignal,
+  detectMediaIntentSignal,
+  detectPlatformIntentSignal,
+  extractUserAuthoredSignalText,
   renderConnectedExternalMcpDirective,
   resolveExclusiveSurface,
 } from './prompts/system.js';
@@ -68,7 +73,7 @@ import {
   collectBrowserUseDiscoveryFacts,
   isBrowserUseRequested,
   renderBrowserUseUnavailablePrompt,
-} from './browser-use-diagnostics.js';
+} from './browser/index.js';
 import {
   UPLOAD_DIR,
   composeLiveInstructionPrompt,
@@ -115,6 +120,9 @@ import {
   foldEventIntoRunSideEffectLedger,
   resolveRunProjectKindForAnalytics,
   retryFinalResultForRunStatus,
+  runArtifactCountForRun,
+  runDesignSystemCreatedForRun,
+  runPreviewModuleCountForRun,
   runRetryEventsForAnalytics,
   runSideEffectsForRun,
   scanRunEventsForFinishedProps,
@@ -321,6 +329,7 @@ import {
   listActiveRuleEntries,
   readMemoryConfig,
 } from './memory.js';
+import { runAutoExtractionCleanup } from './memory-cleanup.js';
 import { attachAcpSession } from './agent-protocol/index.js';
 import { attachPiRpcSession } from './agent-protocol/index.js';
 import { stageAmrImagePaths } from './media/amr-image-staging.js';
@@ -412,7 +421,7 @@ import { buildDesktopArtifactExportInput, buildDesktopPdfExportInput } from './p
 import { generateMedia } from './media/index.js';
 import { listElevenLabsVoiceOptions } from './integrations/elevenlabs-voices.js';
 import { searchResearch, ResearchError } from './research/index.js';
-import { openBrowser } from './browser-open.js';
+import { openBrowser } from './browser/index.js';
 import {
   AUDIO_DURATIONS_SEC,
   AUDIO_MODELS_BY_KIND,
@@ -516,6 +525,7 @@ import {
   insertRoutineRun,
   insertScheduledRoutineRun,
   insertTemplate,
+  latchConversationIntentSignals,
   findTemplateByNameAndProject,
   updateTemplate,
   listProjectsAwaitingInput,
@@ -578,6 +588,7 @@ import {
 import { registerConnectorRoutes } from './connectors/routes.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
+import { registerAttributionRoutes } from './routes/attribution.js';
 import { registerDaemonRoutes } from './routes/daemon.js';
 import { registerGenuiRoutes } from './routes/genui.js';
 import { registerDesignSystemRoutes } from './routes/design-systems.js';
@@ -1157,6 +1168,38 @@ export function createAgentRuntimeToolPrompt(
   ].join('\n');
 }
 
+export function createOpenDesignToolEnv({
+  daemonUrl,
+  projectDir,
+  projectId,
+}: {
+  daemonUrl: string;
+  projectDir?: string | null;
+  projectId?: string | null;
+}): NodeJS.ProcessEnv {
+  return {
+    OD_BIN,
+    OD_DATA_DIR: RUNTIME_DATA_DIR,
+    OD_NODE_BIN,
+    OD_DAEMON_URL: daemonUrl,
+    ...(typeof projectId === 'string' && projectId && projectDir
+      ? {
+          OD_PROJECT_ID: projectId,
+          OD_PROJECT_DIR: projectDir,
+        }
+      : {}),
+  };
+}
+
+export function createDaemonDataDirConfiguredAgentEnv(
+  configuredAgentEnv: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    ...configuredAgentEnv,
+    OD_DATA_DIR: RUNTIME_DATA_DIR,
+  };
+}
+
 export function normalizeProjectDisplayStatus(status) {
   return status === 'starting' || status === 'queued' ? 'running' : status;
 }
@@ -1180,6 +1223,27 @@ export function composeProjectDisplayStatus(
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
 const LANGFUSE_TERMINAL_FALLBACK_DELAY_MS = 15_000;
+
+// Fold per-run work-completeness signals off the agent event stream (#1247 /
+// #1060). Invoked for EVERY agent event via the single emitAgentEvent choke
+// point, so it covers every runtime (Claude stream, qoder, pi-rpc, ACP, …), not
+// just Claude:
+//   - the most recent TodoWrite snapshot's `todos` become run.lastTodoSnapshot,
+//     so finish() can judge whether declared work was left unfinished;
+//   - a turn-terminal event cut off by max_tokens sets run.truncatedMidTurn, so
+//     a truncated generation is flagged incomplete regardless of its todos.
+// Never keys off a mid-turn `tool_use` pause — only turn_end / usage terminals.
+function captureRunWorkCompletenessSignals(run, ev) {
+  if (!run || !ev || typeof ev !== 'object') return;
+  if (ev.type === 'tool_use' && isTodoWriteToolName(ev.name)) {
+    const todos = todoItemsFromTodoWriteInput(ev.input);
+    if (Array.isArray(todos)) run.lastTodoSnapshot = todos;
+    return;
+  }
+  if ((ev.type === 'turn_end' || ev.type === 'usage') && stopReasonIsTruncation(ev.stopReason)) {
+    run.truncatedMidTurn = true;
+  }
+}
 
 function fileNameFromToolInputPath(value) {
   if (typeof value !== 'string') return null;
@@ -2392,6 +2456,23 @@ export async function startServer({
   }
   void snapshotGc; // keep handle alive for the daemon's lifetime
 
+  // Memory hygiene: one-time removal of entries the retired chat
+  // auto-extraction pipelines wrote (regex-pack artifacts + chat-form
+  // residue in user_profile). Marker-gated inside, so this is a no-op on
+  // every boot after the first. Best-effort — memory cleanup must never
+  // block the daemon from serving.
+  try {
+    const memoryCleanup = await runAutoExtractionCleanup(RUNTIME_DATA_DIR);
+    if (memoryCleanup.ran && (memoryCleanup.deletedIds.length > 0 || memoryCleanup.profilePruned)) {
+      console.log(
+        `[memory] auto-extraction cleanup removed ${memoryCleanup.deletedIds.length} entr(y/ies)`
+        + `${memoryCleanup.profilePruned ? ' and pruned user_profile to canonical fields' : ''}`,
+      );
+    }
+  } catch (err) {
+    console.warn('[memory] auto-extraction cleanup failed:', err);
+  }
+
   // Warm agent-capability probes (e.g. whether the installed Claude Code
   // build advertises --include-partial-messages) so the first /api/chat
   // hits a populated cache even if /api/agents hasn't been called yet.
@@ -2541,6 +2622,13 @@ export async function startServer({
     isLocalSameOrigin,
     resolvedPortRef,
   };
+  const attributionService = registerAttributionRoutes(app, {
+    analytics: analyticsService,
+    appConfig: { readAppConfig },
+    http: httpDeps,
+    paths: { RUNTIME_DATA_DIR },
+    env: process.env,
+  });
   const pathDeps = {
     PROJECT_ROOT,
     PROJECTS_DIR,
@@ -2765,7 +2853,15 @@ export async function startServer({
     listMediaTasksByProject,
     listElevenLabsVoiceOptions,
   };
-  const appConfigDeps = { readAppConfig, writeAppConfig };
+  const appConfigDeps = {
+    readAppConfig,
+    writeAppConfig,
+    onAppConfigWritten: () => {
+      void attributionService.processPending().catch((err: unknown) => {
+        console.warn('[attribution] pending claim failed', err);
+      });
+    },
+  };
   const orbitDeps = { orbitService };
   const nativeDialogDeps = { openBrowser, openNativeFolderDialog };
   const researchDeps = { searchResearch, ResearchError };
@@ -3438,6 +3534,9 @@ export async function startServer({
     appliedPluginSnapshotId,
     mediaExecution,
     byokMediaDefaults,
+    freeformDeckSignal,
+    mediaHintSignal,
+    platformHintSignal,
   }) => {
     const project =
       typeof projectId === 'string' && projectId
@@ -3999,6 +4098,16 @@ export async function startServer({
       ...(pluginBlock ? { pluginBlock } : {}),
       ...(activeStageBlocks ? { activeStageBlocks } : {}),
       userInstructions,
+      freeformDeckSignal,
+      mediaHintSignal,
+      platformHintSignal,
+      // VALIDATION DEFAULT — feat/system-prompt integration branch only.
+      // Slim is the default here so packaged beta builds exercise the
+      // rewritten charter without env plumbing (the packaged sidecar env
+      // allowlist does not forward OD_PROMPT_CORE); OD_PROMPT_CORE=classic
+      // restores the classic stack. main keeps classic as the default —
+      // do NOT carry this flip into a PR against main.
+      promptCoreVariant: process.env.OD_PROMPT_CORE === 'classic' ? undefined : 'slim',
     });
     // The chat handler also needs to know where the active skill lives
     // on disk so it can stage a per-project copy of its side files
@@ -4473,6 +4582,35 @@ export async function startServer({
       .filter((s) => typeof oauthTokensForSpawn[s.id] === 'string')
       .map((s) => ({ id: s.id, label: s.label }));
 
+    // Intent signals gate stable-region prompt blocks, so every flip changes
+    // stableInstructionFingerprint and re-sends the whole stable block on
+    // resume. Two rules keep flips down to genuine activations only:
+    //   1. Scan user-authored text only — for transcript-resending agents
+    //      `message` embeds prior ASSISTANT turns, whose copy (the turn-1
+    //      discovery form's own options, delivery summaries) must never flip
+    //      a signal the user did not express.
+    //   2. Latch detections onto the conversation (monotonic ON), so a
+    //      history trim on agent switch or a non-transcript client cannot
+    //      flip a previously seen signal back OFF.
+    // OD_INTENT_SIGNAL_MODE=legacy restores the pre-hotfix whole-text,
+    // unlatched scan.
+    const legacyIntentSignalScan = process.env.OD_INTENT_SIGNAL_MODE === 'legacy';
+    const intentSignalTexts = legacyIntentSignalScan
+      ? [message, currentPrompt]
+      : [
+          extractUserAuthoredSignalText(message),
+          extractUserAuthoredSignalText(currentPrompt),
+        ];
+    const freshIntentSignals = {
+      deck: detectDeckIntentSignal(...intentSignalTexts),
+      media: detectMediaIntentSignal(...intentSignalTexts),
+      platform: detectPlatformIntentSignal(...intentSignalTexts),
+    };
+    const intentSignals =
+      !legacyIntentSignalScan && typeof run.conversationId === 'string' && run.conversationId
+        ? latchConversationIntentSignals(db, run.conversationId, freshIntentSignals)
+        : freshIntentSignals;
+
     const {
       prompt: daemonSystemPrompt,
       activeSkillDirs,
@@ -4495,6 +4633,13 @@ export async function startServer({
         // prompt composer can splice in `## Active stage` blocks.
         // Default ON; set OD_BUNDLED_ATOM_PROMPTS=0 to opt out.
         appliedPluginSnapshotId: run?.appliedPluginSnapshotId ?? null,
+        // User-authored-only, conversation-latched detections (see the
+        // intentSignals block above): a deck mention in the user's own words
+        // anywhere in the conversation keeps the freeform maybe-deck
+        // framework injected for the conversation's whole life.
+        freeformDeckSignal: intentSignals.deck,
+        mediaHintSignal: intentSignals.media,
+        platformHintSignal: intentSignals.platform,
       });
 
     run.designSystemId = designSystemSelection?.id ?? null;
@@ -4592,29 +4737,66 @@ export async function startServer({
             : null;
       return requestPrompt ? { prompt: requestPrompt, promptSource: 'message' as const } : { prompt: null };
     };
-    const snapshotAiHtmlVersionsBeforeSuccess = async () => {
-      if (!run?.id || !run.projectId) return;
-      const artifactBaseline = runArtifactBaselines.peek(run.id);
-      if (!artifactBaseline || artifactBaseline.contended) return;
-      let diff;
-      try {
-        diff = diffRunArtifacts(
-          artifactBaseline.before,
-          snapshotProjectArtifacts(artifactBaseline.cwd),
-        );
-      } catch {
-        return;
+    const resolveRunArtifactOutcomeBeforeFinish = () => {
+      if (!run?.id) return null;
+      if (run.artifactOutcome) return run.artifactOutcome;
+
+      const artifactBaseline = runArtifactBaselines.take(run.id);
+      const fallbackOutcome = () => ({
+        artifactCount: runArtifactCountForRun(run),
+        designSystemCreated: runDesignSystemCreatedForRun(run),
+        previewModuleCount: runPreviewModuleCountForRun(run),
+      });
+      let outcome;
+      if (!artifactBaseline || artifactBaseline.contended) {
+        outcome = fallbackOutcome();
+      } else {
+        try {
+          const diff = diffRunArtifacts(
+            artifactBaseline.before,
+            snapshotProjectArtifacts(artifactBaseline.cwd),
+          );
+          outcome = {
+            artifactCount: diff.touched,
+            artifactsCreated: diff.created,
+            artifactsModified: diff.modified,
+            designSystemCreated: diff.designSystemCreated,
+            previewModuleCount: diff.previewModuleCount,
+            projectRoot: artifactBaseline.cwd,
+            diff,
+          };
+        } catch {
+          outcome = fallbackOutcome();
+        }
       }
+      run.artifactCount = outcome.artifactCount;
+      run.artifactOutcome = outcome;
+      return outcome;
+    };
+    const snapshotAiHtmlVersionsBeforeSuccess = async () => {
+      const outcome = resolveRunArtifactOutcomeBeforeFinish();
+      if (!outcome?.diff || !outcome.projectRoot || !run.projectId) return;
       const promptInfo = latestRunPromptForHtmlVersionSnapshot();
       await snapshotAiHtmlVersionsForRun({
         projectsRoot: PROJECTS_DIR,
         projectId: run.projectId,
-        projectRoot: artifactBaseline.cwd,
-        diff,
+        projectRoot: outcome.projectRoot,
+        diff: outcome.diff,
         prompt: promptInfo.prompt,
         ...(promptInfo.promptSource ? { promptSource: promptInfo.promptSource } : {}),
         metadata: projectRecord?.metadata,
       });
+    };
+    // Chain onto the run service's terminal chokepoint so startup rejection,
+    // direct cancellation, shutdown, and every explicit finish path all consume
+    // their filesystem baseline before the terminal SSE frame is published.
+    const previousOnFinalize = run.onFinalize;
+    run.onFinalize = () => {
+      try {
+        previousOnFinalize?.();
+      } finally {
+        resolveRunArtifactOutcomeBeforeFinish();
+      }
     };
     let codexGeneratedImagesDir = resolveCodexGeneratedImagesDir(
       agentId,
@@ -5062,20 +5244,34 @@ export async function startServer({
     // drive a second close-handler pass that finalizes the run as failed before
     // the retry ever spawns.
     const tearDownAttemptForRetry = () => {
+      // Snapshot the failing attempt's child + process group BEFORE we detach
+      // them, so the reap targets THIS attempt's group and never the next one.
+      const priorChild = run.child;
+      const priorProcessGroupId = run.processGroupId;
       // Release the previous child's stdio streams before letting the
       // reference drop — see destroyChildStdio for rationale.
-      destroyChildStdio(run.child);
+      destroyChildStdio(priorChild);
+      // Disband the WHOLE process group of the failed attempt, not just the
+      // direct child. A same-run retry that only SIGTERMs run.child leaves the
+      // CLI's spawned descendants (MCP servers, tool subprocesses) orphaned
+      // (re-parented to PID 1), accumulating one leaked group per retry. Reap by
+      // the CAPTURED pgid — the SIGKILL escalation is bound to it, so it can
+      // never hit the next attempt's group (the cross-generation kill fixed in
+      // #5202). On win32 / no pgid, fall back to signalling the direct child.
+      const reaped = design.runs.reapProcessGroup(priorProcessGroupId);
       if (
-        run.child &&
-        typeof run.child.kill === 'function' &&
-        run.child.exitCode === null &&
-        !run.child.killed
+        !reaped &&
+        priorChild &&
+        typeof priorChild.kill === 'function' &&
+        priorChild.exitCode === null &&
+        !priorChild.killed
       ) {
-        try { run.child.kill('SIGTERM'); } catch {}
+        try { priorChild.kill('SIGTERM'); } catch {}
       }
       run.status = 'queued';
       run.updatedAt = Date.now();
       run.child = null;
+      run.processGroupId = null;
       run.acpSession = null;
       run.exitCode = null;
       run.signal = null;
@@ -5179,6 +5375,20 @@ export async function startServer({
     };
     const finishWithRetryDecision = (status, code = null, signal = null) => {
       lifecycle.mark('finalize_start');
+      // Persist the transport-level close mechanism before classifying this
+      // attempt. Runtime fatal/stream signals are only known in the close
+      // handler, and the retry classifier reads this diagnostic to distinguish
+      // them from a generic process exit. Clear the pending value immediately
+      // so a scheduled retry cannot inherit the previous attempt's reason.
+      const rpcCloseReason = deriveRpcCloseReason(status, code, signal);
+      design.runs.emit(run, 'diagnostic', {
+        type: 'runtime_close',
+        rpc_close_reason: rpcCloseReason,
+        status,
+        ...(typeof code === 'number' ? { exit_code: code } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      pendingRpcCloseReason = null;
       const result = runResultFromStatus(status);
       const errorCode = deriveRunErrorCode({
         status,
@@ -5294,14 +5504,6 @@ export async function startServer({
         publishNativeSessionRecoveryMetadata();
       }
       finalizeRetryTelemetry(status, decision, failure, errorCode);
-      const rpcCloseReason = deriveRpcCloseReason(status, code, signal);
-      design.runs.emit(run, 'diagnostic', {
-        type: 'runtime_close',
-        rpc_close_reason: rpcCloseReason,
-        status,
-        ...(typeof code === 'number' ? { exit_code: code } : {}),
-        ...(signal ? { signal } : {}),
-      });
       if (executionProfile === 'filesystem' && result === 'success' && visibleAssistantText.trim().length === 0) {
         const fileNames = filesystemWriteFileNamesFromRunEvents(run.events);
         if (fileNames.length > 0) {
@@ -5318,7 +5520,6 @@ export async function startServer({
           });
         }
       }
-      pendingRpcCloseReason = null;
       design.runs.finish(run, status, code, signal);
       return false;
     };
@@ -6081,6 +6282,7 @@ export async function startServer({
           OD_BROWSER_USE_REGISTRY_PATH: run.browserUse.diagnostics?.registryPath ?? '',
         }
       : {};
+    const configuredAgentSpawnEnv = createDaemonDataDirConfiguredAgentEnv(configuredAgentEnv);
     const agentSpawnEnv = spawnEnvForAgent(
       def.id,
       {
@@ -6088,12 +6290,12 @@ export async function startServer({
         ...(def.env || {}),
         ...browserUseRuntimeEnv,
       },
-      configuredAgentEnv,
+      configuredAgentSpawnEnv,
       undefined,
       { resolvedBin: agentLaunch.selectedPath },
     );
     if (def.id === 'amr') {
-      const loginStatus = readVelaLoginStatus(agentSpawnEnv, configuredAgentEnv);
+      const loginStatus = readVelaLoginStatus(agentSpawnEnv, configuredAgentSpawnEnv);
       if (!loginStatus.loggedIn) {
         cleanupPromptFile();
         revokeToolToken('child_exit');
@@ -6106,17 +6308,11 @@ export async function startServer({
         return design.runs.finish(run, 'failed', 1, null);
       }
     }
-    const odMediaEnv = {
-      OD_BIN,
-      OD_NODE_BIN,
-      OD_DAEMON_URL: daemonUrl,
-      ...(typeof projectId === 'string' && projectId && cwd
-        ? {
-            OD_PROJECT_ID: projectId,
-            OD_PROJECT_DIR: cwd,
-          }
-        : {}),
-    };
+    const odMediaEnv = createOpenDesignToolEnv({
+      daemonUrl,
+      projectDir: cwd,
+      projectId: typeof projectId === 'string' ? projectId : null,
+    });
     if (run.cancelRequested || design.runs.isTerminal(run.status)) {
       cleanupPromptFile();
       revokeToolToken('child_exit');
@@ -6326,10 +6522,38 @@ export async function startServer({
       // a Claude Code (anthropic) chat from triggering OpenAI/gpt-4o-
       // mini extraction in the background just because the user has
       // an OpenAI key parked in media-config.
+      //
+      // Also normalize the BYOK provider shape: web side sends
+      // `{ protocol, ... }` via the chat body as `byokProvider`,
+      // but memory-llm.pickProvider expects `{ provider, ... }`
+      // with `provider` being a PROVIDER_DEFAULTS key. We apply the
+      // same mapping the web pre-turn path does (ProjectView.tsx
+      // constructs `{ provider: byokOpenCodeProvider.protocol, ... }`).
+      const memoryChatProvider: {
+        provider?: string;
+        apiKey?: string;
+        baseUrl?: string;
+        apiVersion?: string;
+        model?: string;
+        requiresApiKey?: boolean;
+      } | null = byokProvider
+        ? {
+            provider: (byokProvider as { protocol?: string }).protocol ?? undefined,
+            apiKey: (byokProvider as { apiKey?: string }).apiKey,
+            baseUrl: (byokProvider as { baseUrl?: string }).baseUrl,
+            apiVersion: (byokProvider as { apiVersion?: string }).apiVersion,
+            model: (byokProvider as { model?: string }).model,
+            requiresApiKey: (byokProvider as { requiresApiKey?: boolean }).requiresApiKey,
+          }
+        : null;
       const memoryOptions = {
         projectRoot: PROJECT_ROOT,
         chatAgentId: typeof agentId === 'string' ? agentId : null,
         chatModel: typeof safeModel === 'string' ? safeModel : null,
+        // Forward the per-call BYOK provider snapshot so pickProvider()
+        // can run "Same as chat" extraction against the user's actual
+        // provider/endpoint/model instead of falling back to defaults.
+        chatProvider: memoryChatProvider,
         // Scope the extractor's duplicate-turn de-dup to this conversation, so a
         // re-fired turn collapses but an identical (message, reply) in another
         // conversation is still examined.
@@ -6783,6 +7007,10 @@ export async function startServer({
     // follows the result that triggered it in the stream. (PR #3375 review:
     // Copilot and ACP bypassed the guard by calling send('agent', …) directly.)
     function emitAgentEvent(ev: any) {
+      // Fold work-completeness signals (TodoWrite snapshot / truncation) off the
+      // stream BEFORE the send, so run.lastTodoSnapshot / run.truncatedMidTurn are
+      // set by the time finish() derives run.endedWithUnfinishedWork (#1247/#1060).
+      captureRunWorkCompletenessSignals(run, ev);
       send('agent', ev);
       observeToolEventForLoop(ev);
     }
@@ -6826,7 +7054,6 @@ export async function startServer({
         }
         send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', agentStreamError, {
           details: ev.raw ? { raw: ev.raw } : undefined,
-          retryable: false,
         }));
         return;
       }
@@ -7340,7 +7567,7 @@ export async function startServer({
         markRpcCloseReason('empty_output');
         send('error', createSseErrorPayload(
           'AGENT_EXECUTION_FAILED',
-          'Agent completed without producing any output. The model or provider may have returned an empty response — check the agent logs for upstream errors.',
+          'Agent completed without producing any output. The model or provider may have returned an empty response. Check the agent logs for upstream errors, then try re-authenticating the agent, checking quota, or switching models.',
           { retryable: true },
         ));
         return finishWithRetryDecision('failed', code, signal);
